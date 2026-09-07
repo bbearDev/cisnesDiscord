@@ -1,0 +1,18 @@
+{
+  "_comment": "★ DD-2 핵심 픽스처 — 세션은 열렸으나(대기 채팅으로 방송보다 14초 먼저 열린다) 전수 스캔이 openDate 를 아직 못 붙였다. live:true, confirmed:false. 3상태식으로 unknown 이며 절대 공지하지 않는다. 이 상태가 confirmedStuckMin(5분) 지속되면 AC-P1 경보 1건. 4분59초에서는 0건.",
+  "version": 1,
+  "generatedAt": "2026-09-06T18:57:00.000Z",
+  "channels": [
+    {
+      "channelId": "c3355ea2b3bea6c646789510796379d6",
+      "channelName": "시스네",
+      "live": true,
+      "confirmed": false,
+      "exact": false,
+      "uptimeMs": 14000,
+      "sessionStartedAt": "2026-09-06T18:56:46.000Z",
+      "status": "running",
+      "socketState": "connected"
+    }
+  ]
+}

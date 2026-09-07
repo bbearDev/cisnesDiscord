@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WebSub 푸시 본문 — 허브는 변경된 entry 만 담은 축약 피드를 보낸다.
+  AC-21(1분 이내 공지) 경로의 입력이다.
+-->
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
+  <link rel="hub" href="https://pubsubhubbub.appspot.com"/>
+  <link rel="self" href="https://www.youtube.com/xml/feeds/videos.xml?channel_id=UCcisnesTest0000000001"/>
+  <title>YouTube video feed</title>
+  <updated>2026-09-06T14:00:00+00:00</updated>
+  <entry>
+    <id>yt:video:PUSHVIDEO001</id>
+    <yt:videoId>PUSHVIDEO001</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>푸시로 도착한 신규 업로드</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=PUSHVIDEO001"/>
+    <author>
+      <name>시스네 테스트 채널</name>
+      <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+    </author>
+    <published>2026-09-06T14:00:00+00:00</published>
+    <updated>2026-09-06T14:00:00+00:00</updated>
+  </entry>
+</feed>

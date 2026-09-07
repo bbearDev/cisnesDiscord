@@ -1,0 +1,82 @@
+# cisnesDiscord — systemd 사용자 유닛 (계획 §S8, AC-33)
+#
+# 출처: chzzkbot deploy/systemd/chzzkbot.service 를 옮겨 심었다.
+#
+# ★ 왜 사용자 유닛인가 (계획 rev.5 실측): chzzkbot 실배포가 사용자 유닛
+#   (`~/.config/systemd/user/chzzkbot.service`)이고, cisnesDiscord 도 같은 계정·같은 홈에서
+#   살며 둘 다 root 권한이 필요한 일을 하지 않는다. 형태를 맞춘다.
+#
+# ⚠️ `loginctl enable-linger <계정>` 이 켜져 있어야 로그아웃·재부팅 후에도 산다.
+#    안 켜면 SSH 를 끊는 순간 봇이 함께 죽는다 — 이것을 빠뜨리면 AC-33(상시 구동)이
+#    재부팅 한 번에 깨진다. chzzkbot 이 이미 돌고 있으므로 그 계정에는 켜져 있을
+#    가능성이 높지만, 설치 스크립트가 확인하고 안 켜져 있으면 경고한다.
+#
+# ⚠️ WorkingDirectory / ExecStart 의 경로와 node 바이너리 경로는 **배포 호스트 기준**이다.
+#    설치 전에 실제 경로로 맞춘다 (docs/runbook-ops.md 설치 절차).
+
+[Unit]
+Description=cisnesDiscord — 치지직 인증 · 방송/업로드 공지 봇
+Documentation=file:%h/git/cisnesDiscord/docs/runbook-ops.md
+# 네트워크가 없으면 기동 직후 디스코드 게이트웨이 연결과 WebSub 구독이 모두 실패한다.
+After=network-online.target
+Wants=network-online.target
+
+# ★ StartLimit* 은 **[Unit] 소관이다.** [Service] 에 쓰면 systemd 가
+#   "Unknown key name" 으로 조용히 무시한다 — 재시작 제한이 안 걸린 채
+#   걸린 줄 알게 되는 종류의 실수다 (계획 §S8 이 명시적으로 경고).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/git/cisnesDiscord
+
+# ★ TZ 를 여기서 준다. Node 는 기동 시점에 시간대를 확정하므로 프로세스가 뜨기
+#   **전에** 환경에 있어야 한다. .env 로 주면 늦다.
+#   (다만 DB 의 모든 시각은 ISO-8601 UTC 다 — TZ 는 로그와 사람이 읽는 문안용이다.)
+Environment=TZ=Asia/Seoul
+Environment=NODE_ENV=production
+
+# .env 는 Node 가 직접 읽는다. systemd 의 EnvironmentFile 을 쓰지 않는 이유:
+# 두 파서의 따옴표·주석 규칙이 미묘하게 달라 어긋나면 **시크릿이 조용히 빈 값으로**
+# 들어가고 401 로만 드러난다. 앱이 쓸 파일은 앱이 읽게 둔다 (계획 §S8).
+ExecStart=%h/.local/node/bin/node --env-file=%h/git/cisnesDiscord/.env dist/main.js
+
+# ── 재시작 정책 ────────────────────────────────────────────────────
+# ★ on-failure 가 아니라 always 다. 봇이 스스로 정상 종료(exit 0)해도
+#   그것은 "일을 마쳤다" 가 아니라 "일을 못 하게 됐다" 이기 때문이다.
+Restart=always
+RestartSec=10
+
+# ★★ 78 = 설정 문제, 70 = 볼륨·락·DB 문제. **chzzkbot 실값과 동일하다** —
+#   §5.4 의 EADDRINUSE → exit 78 결정이 두 프로세스에서 일관된다.
+#
+#   ★ 이 목록을 고칠 필요가 없도록 설계했다. EADDRINUSE 가 30초 백오프 뒤
+#     **새 종료 코드를 만들지 않고 78 을 재사용**하기 때문이다. 새 코드를 만들었다면
+#     이 한 줄을 함께 고쳐야 하고, 빠뜨리는 순간 무한 재시작 플래핑이 되살아난다.
+RestartPreventExitStatus=78 70
+
+# ── 종료 ───────────────────────────────────────────────────────────
+# SIGTERM 을 받으면 락을 풀고 DB 를 닫는다 (src/runtime/shutdown.ts).
+# 그 일이 끝나기 전에 죽이면 다음 기동이 락에 걸린다.
+#
+# ★ TimeoutStopSec=30 은 임의값이 아니다 — src/web/server.ts 의
+#   `startup.bindRetrySec`(30초)와 **같은 값**이다. 이전 인스턴스가 정상 종료에
+#   쓸 수 있는 최대 시간이 곧 새 인스턴스가 포트를 기다려야 할 최대 시간이다 (§5.4).
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ── 최소 권한 ──────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# 봇이 쓰는 곳은 여기뿐이다 (SQLite + WAL + 하트비트 + 로그). 나머지 홈은 읽기 전용.
+ReadWritePaths=%h/git/cisnesDiscord/data %h/git/cisnesDiscord/logs
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cisnesdiscord
+
+[Install]
+WantedBy=default.target

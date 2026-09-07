@@ -1,0 +1,1 @@
+{ "_comment": "★ 판정표 2 → unknown. isFollower:true 인데도 cachedAt 나이가 staleAfterMin(150분)을 넘으면 isFollower 를 보지 않고 unknown 이다. 신선도 게이트가 isFollower 판정보다 먼저다. reason='stale'", "channelId": "c3355ea2b3bea6c646789510796379d6", "viewerChannelId": "aaaa1111bbbb2222cccc3333dddd4444", "isFollower": true, "everSynced": true, "cachedAt": "2026-09-06T15:00:00.000Z" }

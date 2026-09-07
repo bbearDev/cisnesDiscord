@@ -1,0 +1,1 @@
+{ "_comment": "★ R5 → unknown. 토큰 하나가 등록된 모든 채널을 열므로 응답 channelId 를 우리가 재필터한다. 아이곰 팔로워 판정을 시스네 것으로 받아들이면 안 된다. reason='wrong-channel'", "channelId": "3594a5258433f765b6247dfe05e5fb33", "viewerChannelId": "aaaa1111bbbb2222cccc3333dddd4444", "isFollower": true, "everSynced": true, "cachedAt": "2026-09-06T18:55:00.000Z" }

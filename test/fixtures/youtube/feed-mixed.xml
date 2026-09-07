@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AC-22 픽스처 — 영상 종류가 섞인 피드 1건.
+
+  ★ 이 파일의 요점: **Atom 피드에는 영상 종류를 알려주는 필드가 없다.**
+    롱폼·쇼츠·예약공개·라이브 다시보기 네 항목이 구조적으로 완전히 같다.
+    그래서 "종류별 분기"를 쓰려면 별도 API(duration/liveStreamingDetails)를
+    호출해야 하고, 계획은 그것을 하지 않기로 했다 (§S6 규칙 AC-22).
+
+    테스트는 이 4건이 **전부** 공지되는지, 그리고 종류를 판별하는 분기가
+    코드에 없는지를 고정한다.
+-->
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"
+      xmlns:media="http://search.yahoo.com/mrss/"
+      xmlns="http://www.w3.org/2005/Atom">
+  <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=UCcisnesTest0000000001"/>
+  <id>yt:channel:UCcisnesTest0000000001</id>
+  <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+  <title>시스네 테스트 채널</title>
+  <link rel="alternate" href="https://www.youtube.com/channel/UCcisnesTest0000000001"/>
+  <author>
+    <name>시스네 테스트 채널</name>
+    <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+  </author>
+  <published>2026-01-01T00:00:00+00:00</published>
+
+  <!-- ① 롱폼 -->
+  <entry>
+    <id>yt:video:LONGFORM001</id>
+    <yt:videoId>LONGFORM001</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>롱폼 영상 — 40분짜리 합방 다시보기</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=LONGFORM001"/>
+    <author>
+      <name>시스네 테스트 채널</name>
+      <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+    </author>
+    <published>2026-09-06T10:00:00+00:00</published>
+    <updated>2026-09-06T10:02:11+00:00</updated>
+    <media:group>
+      <media:title>롱폼 영상 — 40분짜리 합방 다시보기</media:title>
+      <media:content url="https://www.youtube.com/v/LONGFORM001?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+      <media:thumbnail url="https://i4.ytimg.com/vi/LONGFORM001/hqdefault.jpg" width="480" height="360"/>
+      <media:description>롱폼 설명</media:description>
+      <media:community>
+        <media:starRating count="12" average="5.00" min="1" max="5"/>
+        <media:statistics views="340"/>
+      </media:community>
+    </media:group>
+  </entry>
+
+  <!-- ② 쇼츠 — 구조가 롱폼과 완전히 동일하다 -->
+  <entry>
+    <id>yt:video:SHORTS00002</id>
+    <yt:videoId>SHORTS00002</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>쇼츠 — 30초 클립</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SHORTS00002"/>
+    <author>
+      <name>시스네 테스트 채널</name>
+      <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+    </author>
+    <published>2026-09-06T11:30:00+00:00</published>
+    <updated>2026-09-06T11:30:44+00:00</updated>
+    <media:group>
+      <media:title>쇼츠 — 30초 클립</media:title>
+      <media:content url="https://www.youtube.com/v/SHORTS00002?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+      <media:thumbnail url="https://i4.ytimg.com/vi/SHORTS00002/hqdefault.jpg" width="480" height="360"/>
+      <media:description>쇼츠 설명</media:description>
+      <media:community>
+        <media:starRating count="3" average="5.00" min="1" max="5"/>
+        <media:statistics views="1200"/>
+      </media:community>
+    </media:group>
+  </entry>
+
+  <!-- ③ 예약공개(프리미어) — published 가 미래일 수 있다는 것 외에 구별 수단이 없다 -->
+  <entry>
+    <id>yt:video:PREMIERE0003</id>
+    <yt:videoId>PREMIERE0003</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>예약공개 — 신곡 커버 프리미어</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=PREMIERE0003"/>
+    <author>
+      <name>시스네 테스트 채널</name>
+      <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+    </author>
+    <published>2026-09-06T12:00:00+00:00</published>
+    <updated>2026-09-06T12:00:05+00:00</updated>
+    <media:group>
+      <media:title>예약공개 — 신곡 커버 프리미어</media:title>
+      <media:content url="https://www.youtube.com/v/PREMIERE0003?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+      <media:thumbnail url="https://i4.ytimg.com/vi/PREMIERE0003/hqdefault.jpg" width="480" height="360"/>
+      <media:description>프리미어 설명</media:description>
+      <media:community>
+        <media:starRating count="0" average="0.00" min="1" max="5"/>
+        <media:statistics views="0"/>
+      </media:community>
+    </media:group>
+  </entry>
+
+  <!-- ④ 라이브 다시보기 -->
+  <entry>
+    <id>yt:video:LIVEVOD00004</id>
+    <yt:videoId>LIVEVOD00004</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>라이브 다시보기 — 9월 5일 방송</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=LIVEVOD00004"/>
+    <author>
+      <name>시스네 테스트 채널</name>
+      <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+    </author>
+    <published>2026-09-06T13:15:00+00:00</published>
+    <updated>2026-09-06T13:20:30+00:00</updated>
+    <media:group>
+      <media:title>라이브 다시보기 — 9월 5일 방송</media:title>
+      <media:content url="https://www.youtube.com/v/LIVEVOD00004?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+      <media:thumbnail url="https://i4.ytimg.com/vi/LIVEVOD00004/hqdefault.jpg" width="480" height="360"/>
+      <media:description>다시보기 설명</media:description>
+      <media:community>
+        <media:starRating count="8" average="4.90" min="1" max="5"/>
+        <media:statistics views="890"/>
+      </media:community>
+    </media:group>
+  </entry>
+</feed>

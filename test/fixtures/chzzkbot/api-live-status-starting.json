@@ -1,0 +1,16 @@
+{
+  "_comment": "status !== 'running' → 3상태식 unknown. ★ 절대 ended 로 접지 않는다 — 접으면 AC-31 판정 근거가 무너진다. 봇이 그 채널을 아직 서빙하지 않으므로 live 는 항상 false 이고, 그 false 는 '종료'가 아니라 '모름'이다.",
+  "version": 1,
+  "generatedAt": "2026-09-06T19:20:00.000Z",
+  "channels": [
+    {
+      "channelId": "c3355ea2b3bea6c646789510796379d6",
+      "channelName": "시스네",
+      "live": false,
+      "confirmed": false,
+      "exact": false,
+      "status": "starting",
+      "socketState": "connecting"
+    }
+  ]
+}

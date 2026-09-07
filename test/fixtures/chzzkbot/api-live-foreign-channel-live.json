@@ -1,0 +1,32 @@
+{
+  "_comment": "★ 채널 필터 회귀 픽스처 — 남의 채널(아이곰)만 방송 중이다. 우리 코드가 channelId 로 거르지 않으면 아이곰 방송이 시스네 서버에 공지된다(§5.1 rev.5, 우선순위 원칙 3위 = 가장 나쁨). 기대: 공지 0건. 시스네는 ended, 아이곰은 판정 대상에서 아예 제외된다.",
+  "version": 1,
+  "generatedAt": "2026-09-06T19:10:00.000Z",
+  "channels": [
+    {
+      "channelId": "c3355ea2b3bea6c646789510796379d6",
+      "channelName": "시스네",
+      "live": false,
+      "confirmed": false,
+      "exact": false,
+      "status": "running",
+      "socketState": "connected"
+    },
+    {
+      "channelId": "3594a5258433f765b6247dfe05e5fb33",
+      "channelName": "아이곰",
+      "live": true,
+      "confirmed": true,
+      "exact": true,
+      "openDate": "2026-09-07 04:02:11",
+      "openedAt": "2026-09-06T19:02:11.000Z",
+      "liveHash": "421655d8",
+      "liveId": 77123456,
+      "categoryValue": "GAME",
+      "uptimeMs": 469000,
+      "sessionStartedAt": "2026-09-06T19:01:57.000Z",
+      "status": "running",
+      "socketState": "connected"
+    }
+  ]
+}

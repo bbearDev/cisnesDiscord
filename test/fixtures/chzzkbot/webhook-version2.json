@@ -1,0 +1,10 @@
+{
+  "_comment": "계약 변경 감지 픽스처 — version !== 1 이면 400 으로 거부하고 운영 채널에 기록한다. 조용히 무시하면 계약이 바뀐 것을 아무도 못 알아챈다.",
+  "event": "live.started",
+  "version": 2,
+  "channelId": "c3355ea2b3bea6c646789510796379d6",
+  "openDate": "2026-09-07 03:56:39",
+  "openedAt": "2026-09-06T18:56:39.000Z",
+  "liveHash": "df09256e",
+  "detectedAt": "2026-09-06T18:57:31.000Z"
+}

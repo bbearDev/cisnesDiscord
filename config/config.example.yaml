@@ -1,0 +1,106 @@
+# cisnesDiscord 설정 예시
+#
+# 이 파일을 config/config.yaml 로 복사한 뒤 REQUIRED 를 실제 값으로 바꾸십시오.
+# REQUIRED 가 하나라도 남아 있으면 **기동을 거부하고 exit 78** 로 종료합니다.
+#
+# ★ 시크릿은 여기 적지 않습니다. 봇 토큰 · LIVE_EVENT_WEBHOOK_TOKEN ·
+#   LIVE_API_TOKEN · 치지직 클라이언트 시크릿은 전부 .env 에 둡니다
+#   (.env.example 참고). 시크릿으로 보이는 키가 이 파일에 있으면 기동을 거부합니다 —
+#   "여기 적어도 동작은 한다" 가 되는 순간 누군가 적고, 그 파일이 커밋됩니다.
+
+logLevel: info
+logRetentionDays: 14
+
+paths:
+  db: data/cisnes.db
+  logs: data/logs
+  lock: data/cisnes.lock
+  heartbeat: data/heartbeat
+
+startup:
+  # ★ EADDRINUSE 백오프 재시도 창 (계획 §5.4). 포트 바인드가 상호배제의
+  #   1차 프리미티브라, 앞 인스턴스가 정상 종료하는 동안은 기다려야 합니다.
+  #   ← deploy/systemd/cisnesdiscord.service 의 TimeoutStopSec=30 과 같은 값이며
+  #     이보다 짧으면 스키마가 기동을 거부합니다.
+  #   이 창을 넘겨도 포트가 안 풀리면 exit 78 로 종료합니다 (systemd 가 재시작하지 않음).
+  bindRetrySec: 30
+
+web:
+  # 계획 §5.4 — chzzkbot 8080 / cisnesDiscord 8081 (실측 확정)
+  port: 8081
+  # ★ 루프백 격리. 공개가 필요한 경로는 OAuth 콜백과 WebSub 둘뿐이고
+  #   그 둘은 리버스 프록시가 https 로 종단합니다 (S0-5).
+  bindAddress: 127.0.0.1
+  # 프록시가 종단하는 공개 주소. OAuth 콜백·WebSub 콜백 URL 의 기준값입니다.
+  publicBaseUrl: REQUIRED
+
+chzzkbot:
+  # 같은 호스트의 루프백이라 프록시 대상이 아닙니다.
+  baseUrl: http://127.0.0.1:8080
+
+live:
+  # ★ 단수 필드입니다 — 배열이 아닙니다 (Non-Goal: 다채널 감지 없음).
+  #   시스네 채널. chzzkbot 이 2채널을 서빙 중이므로 웹훅·폴링 양쪽에서
+  #   우리가 이 값으로 거르지 않으면 남의 방송이 이 서버에 공지됩니다.
+  channelId: c3355ea2b3bea6c646789510796379d6
+  # ← chzzkbot 재시도 창(7분) + 여유 3분 (계획 §2-b). 이보다 짧으면
+  #   정상적인 재시도 시퀀스가 오경보를 냅니다 — 스키마가 거부합니다.
+  webhookSilenceGraceMin: 10
+  # ← 재시도 창(7분)보다 짧아야 합니다 (§5.1 경계 1). 스키마가 검사합니다.
+  apiPollIntervalMin: 3
+  # AC-P1 — live:true, confirmed:false 가 이만큼 지속되면 운영 채널 경보.
+  confirmedStuckMin: 5
+  # AC-P2 — unknown 이 이만큼 연속되면 경보 (3분 × 5 = 15분).
+  pollFailThresholdCount: 5
+
+follower:
+  # ⚠️ 잠정값입니다 (계획 §2-b). 2×sweepInterval(60) + followerCacheMin(10) + 여유(20).
+  #   실측이 아니라 상류 소스 상수에서 추론한 값이며 S1-J 가 확정합니다.
+  #   게이트는 지금 켜고, stale 경보는 실측 뒤에 켭니다.
+  staleAfterMin: 150
+
+http:
+  # 나가는 HTTP 의 동시 상한. 전 아웃바운드가 이 하나를 나눠 씁니다 (§5.6.1).
+  # ⚠️ 아래 auth.maxConcurrentFlows 와 값은 같지만 뜻이 다릅니다.
+  maxConcurrent: 8
+
+auth:
+  # /인증 진입의 길드 전역 동시 상한 (§5.6.2 · FM1).
+  # ⚠️ 위 http.maxConcurrent 와 다른 것입니다 — 저기는 나가는 요청, 여기는 들어오는 진입.
+  maxConcurrentFlows: 8
+  # /인증 사용자당 쿨다운. 우리 쪽 유일한 사용자별 상한입니다.
+  commandCooldownSec: 30
+  # state TTL — 발급 후 이 시간이 지나면 소모할 수 없다
+  sessionTtlMin: 10
+  # verification_sessions 대기 상한 (§5.6.2).
+  #   ★ 도달하면 운영 채널에 경보한다 — 조용히 폐기하면 공격을 관측할 수 없다.
+  maxPending: 512
+
+recovery:
+  # 이 시간을 넘겨 다운돼 있었으면 밀린 유튜브 업로드를 생략합니다 (AC-30).
+  # ★ 진행 중인 방송은 생략 대상이 아닙니다 (§5.1 경계 2).
+  downtimeThresholdHours: 6
+
+alerts:
+  enabled: true
+  # 같은 (scope, kind) 를 이 간격 안에 반복 발송하지 않습니다. 0 이면 디바운스를 끕니다.
+  minIntervalMin: 30
+
+# 유튜브 감지 (§5.3) — WebSub 주경로 + RSS 폴백.
+#   ★ 역할이 갈린다: WebSub 이 **지연(AC-21)**, RSS 가 **누락 0(AC-25)** 을 진다.
+#     RSS 폴백은 "1분"을 지키는 장치가 아니다 — WebSub 이 죽은 동안 발견된 영상은
+#     1분을 넘겨 공지될 수 있고, 그것은 설계된 동작이다.
+youtube:
+  # S0-10 에서 확정한다. 2~5개.
+  channels: []
+  #  - channelId: UCxxxxxxxxxxxxxxxxxxxxxx
+  #    label: 시스네 유튜브
+  rssPollSec: 60
+  # AC-P4 — RSS 폴 연속 실패 임계
+  rssFailThresholdCount: 5
+  # AC-P7 — 구독 갱신 연속 실패 임계
+  renewFailThresholdCount: 3
+  # AC-P7 — 리스 잔여가 이 비율 미만이면 경보.
+  #   ★ 갱신 자체는 50% 시점에 한다. 이 값은 "갱신이 안 되고 있다"를 잡는 경보선이지
+  #     갱신 시점이 아니다 — 같은 값으로 두면 정상 갱신마다 경보가 난다.
+  leaseWarnRatio: 0.2

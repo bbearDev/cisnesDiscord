@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AC-26 픽스처 — 빈 DB 로 처음 기동할 때 보이는 현재 피드(최신 15건).
+  기대: 공지 0개, announcement_ledger 에 15행이 seeded=1 로 선점된다.
+-->
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
+  <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+  <title>시스네 테스트 채널</title>
+  <entry>
+    <id>yt:video:SEEDVIDEO01</id>
+    <yt:videoId>SEEDVIDEO01</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 01 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO01"/>
+    <published>2026-08-01T09:00:00+00:00</published>
+    <updated>2026-08-01T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO02</id>
+    <yt:videoId>SEEDVIDEO02</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 02 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO02"/>
+    <published>2026-08-02T09:00:00+00:00</published>
+    <updated>2026-08-02T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO03</id>
+    <yt:videoId>SEEDVIDEO03</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 03 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO03"/>
+    <published>2026-08-03T09:00:00+00:00</published>
+    <updated>2026-08-03T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO04</id>
+    <yt:videoId>SEEDVIDEO04</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 04 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO04"/>
+    <published>2026-08-04T09:00:00+00:00</published>
+    <updated>2026-08-04T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO05</id>
+    <yt:videoId>SEEDVIDEO05</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 05 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO05"/>
+    <published>2026-08-05T09:00:00+00:00</published>
+    <updated>2026-08-05T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO06</id>
+    <yt:videoId>SEEDVIDEO06</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 06 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO06"/>
+    <published>2026-08-06T09:00:00+00:00</published>
+    <updated>2026-08-06T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO07</id>
+    <yt:videoId>SEEDVIDEO07</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 07 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO07"/>
+    <published>2026-08-07T09:00:00+00:00</published>
+    <updated>2026-08-07T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO08</id>
+    <yt:videoId>SEEDVIDEO08</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 08 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO08"/>
+    <published>2026-08-08T09:00:00+00:00</published>
+    <updated>2026-08-08T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO09</id>
+    <yt:videoId>SEEDVIDEO09</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 09 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO09"/>
+    <published>2026-08-09T09:00:00+00:00</published>
+    <updated>2026-08-09T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO10</id>
+    <yt:videoId>SEEDVIDEO10</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 10 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO10"/>
+    <published>2026-08-10T09:00:00+00:00</published>
+    <updated>2026-08-10T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO11</id>
+    <yt:videoId>SEEDVIDEO11</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 11 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO11"/>
+    <published>2026-08-11T09:00:00+00:00</published>
+    <updated>2026-08-11T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO12</id>
+    <yt:videoId>SEEDVIDEO12</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 12 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO12"/>
+    <published>2026-08-12T09:00:00+00:00</published>
+    <updated>2026-08-12T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO13</id>
+    <yt:videoId>SEEDVIDEO13</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 13 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO13"/>
+    <published>2026-08-13T09:00:00+00:00</published>
+    <updated>2026-08-13T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO14</id>
+    <yt:videoId>SEEDVIDEO14</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 14 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO14"/>
+    <published>2026-08-14T09:00:00+00:00</published>
+    <updated>2026-08-14T09:05:00+00:00</updated>
+  </entry>
+  <entry>
+    <id>yt:video:SEEDVIDEO15</id>
+    <yt:videoId>SEEDVIDEO15</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>과거 영상 15 — 소급 공지 금지 대상</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=SEEDVIDEO15"/>
+    <published>2026-08-15T09:00:00+00:00</published>
+    <updated>2026-08-15T09:05:00+00:00</updated>
+  </entry>
+</feed>

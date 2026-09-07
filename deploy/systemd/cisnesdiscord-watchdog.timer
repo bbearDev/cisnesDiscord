@@ -1,0 +1,20 @@
+# 시간당 1회 + 임계 90분 → 탐지 지연 최대 약 2.5시간.
+#
+# 출처: chzzkbot deploy/systemd/chzzkbot-watchdog.timer.
+#
+# ★ 사용자 타이머다: `systemctl --user enable --now cisnesdiscord-watchdog.timer`
+
+[Unit]
+Description=cisnesDiscord 워치독을 매시간 돌린다
+
+[Timer]
+OnCalendar=hourly
+# ★ 정각에 몰리지 않게 흩뜨린다. chzzkbot 워치독도 매시간이라 그대로 두면
+#   두 워치독이 같은 순간에 깨어 같은 디스코드 웹훅을 동시에 두드린다.
+RandomizedDelaySec=300
+# ★ 껐다 켠 동안 걸러진 실행을 부팅 후 한 번 따라잡는다.
+#   재부팅 직후가 봇이 안 올라올 위험이 가장 큰 때다.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

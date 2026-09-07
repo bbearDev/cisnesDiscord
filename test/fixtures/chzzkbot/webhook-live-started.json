@@ -1,0 +1,15 @@
+{
+  "_comment": "정상 웹훅 페이로드. liveHash 는 우리가 계산하지 않고 받은 값을 그대로 원장 eventKey 로 쓴다. 웹훅에는 confirmed 필드가 없다 — onScanAttached(openDate 확정 시점)에서만 발사되므로 암묵적으로 확정 상태다.",
+  "event": "live.started",
+  "version": 1,
+  "channelId": "c3355ea2b3bea6c646789510796379d6",
+  "channelName": "시스네",
+  "openDate": "2026-09-07 03:56:39",
+  "openedAt": "2026-09-06T18:56:39.000Z",
+  "liveHash": "df09256e",
+  "liveId": 88220011,
+  "liveTitle": "오늘은 잡담방송",
+  "categoryValue": "TALK",
+  "concurrentUserCount": 42,
+  "detectedAt": "2026-09-06T18:57:31.000Z"
+}

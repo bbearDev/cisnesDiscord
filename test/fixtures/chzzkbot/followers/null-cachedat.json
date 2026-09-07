@@ -1,0 +1,1 @@
+{ "_comment": "★ 판정표 0-b → unknown. cachedAt 이 null 이면 나이 비교가 거짓이 되어 게이트를 통과해 버리던 구멍(rev.8 신설). isFollower:true 여도 yes 로 새면 안 된다. R3 위반(상류가 last_full_sync_at 을 실었을 때)의 실제 모양이다. reason='bad-shape'", "channelId": "c3355ea2b3bea6c646789510796379d6", "viewerChannelId": "aaaa1111bbbb2222cccc3333dddd4444", "isFollower": true, "everSynced": true, "cachedAt": null }

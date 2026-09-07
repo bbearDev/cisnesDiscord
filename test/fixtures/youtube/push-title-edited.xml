@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AC-23 픽스처 — push-single.xml 과 **같은 videoId**, 제목만 바뀌고 updated 가 늦다.
+
+  ★ WebSub 은 제목·설명 수정 시에도 푸시를 보낸다. 멱등 키에 제목이나 updated 를
+    넣으면 수정 1회마다 새 공지가 나간다. 키는 **videoId 단독**이어야 한다.
+    이 픽스처를 3회 재푸시해도 공지가 1개인지 테스트가 고정한다.
+-->
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
+  <link rel="hub" href="https://pubsubhubbub.appspot.com"/>
+  <link rel="self" href="https://www.youtube.com/xml/feeds/videos.xml?channel_id=UCcisnesTest0000000001"/>
+  <title>YouTube video feed</title>
+  <updated>2026-09-06T15:42:00+00:00</updated>
+  <entry>
+    <id>yt:video:PUSHVIDEO001</id>
+    <yt:videoId>PUSHVIDEO001</yt:videoId>
+    <yt:channelId>UCcisnesTest0000000001</yt:channelId>
+    <title>[제목 수정됨] 푸시로 도착한 신규 업로드 — 썸네일 교체</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=PUSHVIDEO001"/>
+    <author>
+      <name>시스네 테스트 채널</name>
+      <uri>https://www.youtube.com/channel/UCcisnesTest0000000001</uri>
+    </author>
+    <published>2026-09-06T14:00:00+00:00</published>
+    <updated>2026-09-06T15:42:00+00:00</updated>
+  </entry>
+</feed>

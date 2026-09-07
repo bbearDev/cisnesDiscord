@@ -1,0 +1,37 @@
+# 봇 **바깥**의 dead-man's-switch — 계획 §S8, AC-34.
+#
+# 출처: chzzkbot deploy/systemd/chzzkbot-watchdog.service.
+#
+# systemd 의 Restart=always 는 프로세스가 **죽었을 때만** 손을 쓴다.
+# 이 워치독이 잡는 것은 그것으로 안 되는 두 가지다:
+#   ① 프로세스는 살아 있는데 일을 안 하는 상태 (하트비트가 낡음)
+#   ② systemd 가 재시작을 포기한 상태 (StartLimitBurst 초과 → failed)
+#
+# ②는 사람이 `reset-failed` 를 쳐야 풀린다. 아무도 모르면 봇은 영영 내려가 있다.
+#
+# ★ 봇 프로세스가 죽어도 타이머는 산다 — 그것이 "바깥에 둔다"의 요점이다.
+
+[Unit]
+Description=cisnesDiscord 워치독 (하트비트 · 서비스 상태 점검)
+# 봇이 죽어 있어도 이건 돌아야 한다. Requires= 를 걸면 안 된다.
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=SYSTEMD_UNIT=cisnesdiscord.service
+Environment=HEARTBEAT_PATH=%h/git/cisnesDiscord/data/heartbeat
+Environment=WATCHDOG_ENV_FILE=%h/.config/cisnesdiscord/watchdog.env
+# 하트비트는 30초마다 갱신된다. 90분이면 오경보 없이 진짜 정지만 잡는다.
+Environment=THRESHOLD_MIN=90
+ExecStart=%h/git/cisnesDiscord/scripts/host-watchdog.sh
+
+# ★ 워치독이 실패로 끝나는 것은 **정상 동작**이다 — 이상을 찾으면 exit 1 을 낸다.
+#   그걸 systemd 실패로 세면 워치독 유닛 자체가 failed 로 물들어
+#   "워치독이 고장난 것" 과 "봇이 고장난 것" 이 구별되지 않는다.
+SuccessExitStatus=0 1
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+SyslogIdentifier=cisnesdiscord-watchdog

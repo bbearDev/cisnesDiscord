@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  깨진 XML — feed-parse 가 throw 하지 않고 빈 결과 + 실패 카운트로 처리하는지 고정한다.
+  (닫히지 않은 <entry>, 잘린 문서)
+-->
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
+  <title>YouTube video feed</title>
+  <entry>
+    <id>yt:video:BROKEN000001</id>
+    <yt:videoId>BROKEN000001</yt:videoId>
+    <title>닫히지 않은 엔트리

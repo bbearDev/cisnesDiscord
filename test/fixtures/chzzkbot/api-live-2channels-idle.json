@@ -1,0 +1,25 @@
+{
+  "_comment": "rev.5 실측 — 평상시(방송 없음) 응답. 채널이 2건인 것이 §5.1 채널 필터를 필수 요건으로 만든 근거다. 3상태식으로는 두 채널 모두 ended(!live && status==='running') 이며 정상적인 '방송 중 아님'이다. 경보 대상이 아니다.",
+  "version": 1,
+  "generatedAt": "2026-09-06T18:00:00.000Z",
+  "channels": [
+    {
+      "channelId": "c3355ea2b3bea6c646789510796379d6",
+      "channelName": "시스네",
+      "live": false,
+      "confirmed": false,
+      "exact": false,
+      "status": "running",
+      "socketState": "connected"
+    },
+    {
+      "channelId": "3594a5258433f765b6247dfe05e5fb33",
+      "channelName": "아이곰",
+      "live": false,
+      "confirmed": false,
+      "exact": false,
+      "status": "running",
+      "socketState": "connected"
+    }
+  ]
+}
