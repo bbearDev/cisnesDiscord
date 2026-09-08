@@ -296,7 +296,9 @@ function makeEnv(): Env {
 /** `/인증` → 반환된 URL 에서 state 를 뽑는다 */
 async function runLink(env: Env, userId: string): Promise<{ content: string; state: string }> {
   const reply = await env.linkCmd.execute({ guildId: GUILD, userId });
-  const match = /\/oauth\/start\?s=([^\s]+)/.exec(reply.content);
+  // ★ 링크는 `<...>` 로 감싸 나간다 — 디스코드 크롤러가 /oauth/start 를 가져가
+  //   nonce 를 회전시키는 것을 막기 위해서다. `>` 를 state 에 딸려 보내지 않는다.
+  const match = /\/oauth\/start\?s=([^\s>]+)/.exec(reply.content);
   return { content: reply.content, state: match?.[1] ?? '' };
 }
 
@@ -878,4 +880,28 @@ describe('실패 격리', () => {
     expect(res.status).toBe(400);
     expect(env.counts.token).toBe(0);
   });
+  /**
+   * ★★ 디스코드 크롤러가 인증 링크를 가져가지 못하게 한다 (실배포 관측, 2026-09-08).
+   *
+   *   `/oauth/start` 는 방문할 때마다 `attachNonce` 로 nonce 를 **회전**시키고
+   *   새 쿠키를 응답에 싣는다(`session.ts`). 그런데 디스코드는 메시지의 링크를
+   *   미리보기용으로 **직접 가져간다** — 벙커웹 로그에 남은 실제 요청:
+   *
+   *     35.237.4.214 "GET /oauth/start?s=71Usw…" "Mozilla/5.0 (compatible; Discordbot/2.0; …)"
+   *
+   *   그 크롤러가 **사용자 클릭 3초 뒤에** 도착했다. 사용자가 치지직 동의 화면에
+   *   머무는 사이에 도착하면 서버 해시가 크롤러의 nonce 로 덮이고, 사용자의 쿠키는
+   *   어긋나 **콜백이 state 검증에서 거부**된다.
+   *
+   * ★ `<...>` 는 디스코드가 미리보기를 만들지 않게 하는 표준 표기다. UA 를 보고
+   *   거르는 방식과 달리 **크롤러가 애초에 오지 않으므로** 문자열 판별에 기대지 않는다.
+   */
+  it('★ 인증 링크는 <> 로 감싸 나간다 — 디스코드 크롤러가 가져가지 못하게', async () => {
+    const reply = await env.linkCmd.execute({ guildId: GUILD, userId: 'crawler-guard' });
+    const m = /(.?)https?:\/\/[^\s]*\/oauth\/start\?s=[^\s>]+(.?)/.exec(reply.content);
+    expect(m, '인증 링크가 응답에 없다').not.toBeNull();
+    expect(m?.[1], '링크 앞이 < 가 아니다').toBe('<');
+    expect(m?.[2], '링크 뒤가 > 가 아니다').toBe('>');
+  });
+
 });

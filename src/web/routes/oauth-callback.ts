@@ -378,7 +378,10 @@ export function createOAuthCallbackRoute(deps: OAuthCallbackDeps): Route {
     const identified = await deps.viewerToken.identify({ code, state, deadlineAt });
     if (!identified.ok) {
       settle(session.state, 'exchange-failed');
-      log('시청자 신원 확인 실패', { reason: identified.reason });
+      // ★ `detail` 을 함께 남긴다. `reason` 만으로는 'exchange-failed' 밖에 안 남아
+      //   **상류가 왜 거절했는지**(401 INVALID_CLIENT 인지 403 코드 오류인지)를 잃는다.
+      //   실배포에서 이 한 칸이 없어 자격증명 오설정을 찾는 데 오래 걸렸다 (2026-09-08).
+      log('시청자 신원 확인 실패', { reason: identified.reason, detail: identified.detail });
       return page(502, '인증을 완료하지 못했습니다', exchangeFailedMessage(), clearCookie);
     }
     const identity = identified.identity;
