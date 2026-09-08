@@ -28,6 +28,21 @@ export function videoUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
 }
 
+/**
+ * 영상 썸네일 URL. `videoId` 만으로 결정된다 — 피드에서 따로 읽지 않는다.
+ *
+ * ★★ **`hqdefault` 를 쓴다. `maxresdefault` 가 아니다.**
+ *   `maxresdefault` 는 **HD 로 업로드된 영상에만 존재**하고, 없으면 404 다.
+ *   디스코드는 그 404 를 조용히 삼켜 **이미지 자리를 빈 채로** 렌더한다 —
+ *   즉 "가끔 그림이 안 나오는" 상태가 되고, 그게 왜 그런지는 로그에도 안 남는다.
+ *   `hqdefault`(480×360)는 모든 영상에 항상 있고 임베드 폭에도 충분하다.
+ *
+ * ★ 쇼츠도 같은 경로를 쓴다 (AC-22 — 영상 종류로 갈라 다루지 않는다).
+ */
+export function thumbnailUrl(videoId: string): string {
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
+}
+
 /** 제목이 비어 있을 때의 문안. 빈 제목 임베드는 디스코드가 거절한다 */
 export const UNTITLED = '(제목 없음)';
 
@@ -37,6 +52,7 @@ export function buildUploadEmbedSpec(entry: FeedEntry, detectedVia: DetectedVia)
     url: videoUrl(entry.videoId),
     color: UPLOAD_EMBED_COLOR,
     ...(entry.publishedAt === '' ? {} : { timestamp: entry.publishedAt }),
+    image: thumbnailUrl(entry.videoId),
     // ★ 감지 경로를 푸터에 남긴다 — `rss` 가 계속 보이면 WebSub 이 죽어 있다는 뜻이고,
     //   사람이 지표를 안 봐도 눈으로 알아챈다 (계획 §11).
     detectedVia,

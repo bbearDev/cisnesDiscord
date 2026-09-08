@@ -108,6 +108,8 @@ export interface AnnouncementEmbed {
   timestamp?: string;
   color?: number;
   footer?: { text: string };
+  /** 본문 아래 큰 이미지. 디스코드 API 형태 그대로 `{ url }` 이다 */
+  image?: { url: string };
 }
 
 export interface SendPayload {

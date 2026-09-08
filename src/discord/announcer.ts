@@ -100,6 +100,17 @@ export interface EmbedSpec {
    * (계획 §11). `api-poll` 이 계속 보이면 웹훅이 죽어 있다는 뜻이다.
    */
   detectedVia?: string;
+  /**
+   * 본문 아래 큰 이미지의 URL.
+   *
+   * ★ `thumbnail`(우측 상단 작은 정사각)이 아니라 `image`(전체 폭)다. 공지는
+   *   타임라인에서 한 번에 눈에 들어와야 하고, 작은 정사각은 그 일을 못 한다.
+   *
+   * ★★ **디스코드가 이 이미지를 캐시한다.** 임베드를 만든 순간의 그림이 박제되므로,
+   *   시간에 따라 변하는 이미지를 넣으면 "지금"이 아니라 "그때"가 남는다.
+   *   유튜브 썸네일은 업로드 후 바뀌지 않아 이 성질이 문제가 되지 않는다.
+   */
+  image?: string;
 }
 
 export function buildAnnouncementEmbed(spec: EmbedSpec): AnnouncementEmbed {
@@ -110,6 +121,7 @@ export function buildAnnouncementEmbed(spec: EmbedSpec): AnnouncementEmbed {
     ...(spec.timestamp === undefined ? {} : { timestamp: spec.timestamp }),
     ...(spec.color === undefined ? {} : { color: spec.color }),
     ...(spec.detectedVia === undefined ? {} : { footer: { text: `감지: ${spec.detectedVia}` } }),
+    ...(spec.image === undefined ? {} : { image: { url: spec.image } }),
   };
 }
 
