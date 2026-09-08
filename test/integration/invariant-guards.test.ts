@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
@@ -262,5 +262,44 @@ describe('★ 저장소 밖으로 새어 나간 파생 상수 — systemd 유닛
     const codes = (m?.[1] ?? '').trim().split(/\s+/).map(Number);
     expect(codes).toContain(BIND_ERROR_EXIT_CODE);
     expect(codes).toContain(LOCK_ERROR_EXIT_CODE);
+  });
+});
+
+
+describe('★ 빌드 산출물 — 마이그레이션 .sql 이 dist 까지 따라간다', () => {
+  /**
+   * ★★ 실배포에서 실제로 밟은 함정이다 (2026-09-08).
+   *
+   *   `migrate.ts` 는 **자기 파일 기준**으로 `migrations` 디렉터리를 찾는다:
+   *       join(dirname(fileURLToPath(import.meta.url)), 'migrations')
+   *   경로 해석 자체는 옳다 — `dist/store/migrate.js` 옆의 `dist/store/migrations` 를 본다.
+   *   그런데 **`tsc` 는 `.ts` 만 컴파일하고 `.sql` 은 복사하지 않는다.** 그래서
+   *   `npm run build` 만으로는 그 디렉터리가 생기지 않고, 기동이 exit 70 으로 죽는다:
+   *       ENOENT: no such file or directory, scandir '.../dist/store/migrations'
+   *
+   * ★ 이 테스트들이 왜 못 잡았나: 모든 테스트가 `src/store/migrations/001_init.sql` 을
+   *   **직접 읽는다.** vitest 는 `src` 를 그대로 돌리므로 dist 레이아웃을 한 번도 지나지
+   *   않는다. 그래서 "스키마는 맞는데 배포하면 안 뜨는" 구간이 통째로 사각이었다.
+   *
+   * → 그래서 여기서 **빌드 스크립트 자체**를 본다. 산출물이 아니라 산출 규칙을 거는 것이
+   *   테스트가 빌드를 돌리지 않고도 회귀를 막는 유일한 자리다.
+   */
+  it('build 스크립트가 마이그레이션 .sql 을 dist 로 복사한다', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const build = pkg.scripts?.build ?? '';
+    expect(build, 'build 스크립트가 없다').not.toBe('');
+    // ★ 반공허 가드 — 컴파일 단계가 사라져도 여기서 걸린다
+    expect(build).toContain('tsc');
+    expect(build, 'tsc 는 .sql 을 복사하지 않는다 — 복사 단계가 빠졌다').toContain(
+      'dist/store/migrations',
+    );
+  });
+
+  it('★ src 에 있는 .sql 이 하나라도 있다 — 복사할 것이 없으면 위 검사가 공짜로 통과한다', () => {
+    const files = readdirSync('src/store/migrations').filter((f) => f.endsWith('.sql'));
+    expect(files.length).toBeGreaterThan(0);
+    expect(files).toContain('001_init.sql');
   });
 });
