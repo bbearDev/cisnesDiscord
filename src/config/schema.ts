@@ -218,8 +218,19 @@ const YoutubeSchema = z.object({
       }),
     )
     .default([]),
-  /** RSS 폴백 주기 */
-  rssPollSec: z.number().int().positive().default(60),
+  /**
+   * RSS 폴백 주기 (기본 300초).
+   *
+   * ★★ 60초에서 올린 값이다 (실배포 2026-09-09). 60초 × 채널 2개 = 하루 2,880회는
+   *   공개 RSS 피드로는 공격적이고, 실제로 **우리 IP 가 유튜브에 조여져** 피드가
+   *   404 를 돌려주기 시작했다. 같은 시각 다른 IP(휴대폰)에서는 정상이었고
+   *   제3자 채널까지 같은 404 를 받아, 채널이 아니라 발신지 문제임이 확인됐다.
+   *
+   * ★ 지연 요건이 없다. **AC-25 는 폴백이 "동작하며" 중복 방지를 통과하는지만**
+   *   본다 — 몇 초 안에 잡으라는 조항이 없다. 그리고 WebSub 이 살아 있으면 푸시가
+   *   즉시 오므로 이 값은 **폴백일 때만** 체감된다.
+   */
+  rssPollSec: z.number().int().positive().default(300),
   /** AC-P4 — RSS 폴이 채널 단위로 이만큼 연속 실패하면 경보 */
   rssFailThresholdCount: z.number().int().positive().default(5),
   /** AC-P7 — 구독 갱신이 이만큼 연속 실패하면 경보 */

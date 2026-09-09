@@ -95,7 +95,10 @@ youtube:
   channels: []
   #  - channelId: UCxxxxxxxxxxxxxxxxxxxxxx
   #    label: 시스네 유튜브
-  rssPollSec: 60
+  # ★ 60 이 아니다 — 60초×채널수 폴링은 유튜브가 발신지 IP 를 조이기에 충분하다
+  #   (실배포 2026-09-09에 실제로 404 를 받았다). AC-25 에 지연 요건이 없고,
+  #   WebSub 이 살아 있으면 푸시가 즉시 오므로 이 값은 폴백일 때만 체감된다.
+  rssPollSec: 300
   # AC-P4 — RSS 폴 연속 실패 임계
   rssFailThresholdCount: 5
   # AC-P7 — 구독 갱신 연속 실패 임계
