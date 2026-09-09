@@ -999,4 +999,65 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     h.poller.stop();
     expect(h.clock.pending).toBe(0);
   });
+
+  /**
+   * ★★ 고정 간격 폴링이 상류의 스로틀링을 **스스로 연장하던** 문제 (실배포 2026-09-09).
+   *
+   *   초판은 `setInterval(pollAll, 60초)` 였다. 상류가 404 를 돌려주기 시작해도
+   *   간격은 정확히 60초를 유지했고, 그날 320회 실패가 그 속도로 쌓였다.
+   *   같은 시각 **다른 IP(휴대폰)에서는 같은 피드가 정상**이었고 제3자 채널까지
+   *   같은 404 를 받았다 — 채널이 아니라 **우리 IP 가 걸린 것**이었다.
+   *
+   * ★ RSS 는 WebSub 이 죽었을 때의 유일한 폴백이라 상한(15분)이 필요하고,
+   *   성공하면 **즉시** 기본 간격으로 돌아와야 한다.
+   */
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+  };
+
+  it('★ 연속 실패하면 폴 간격을 물린다 — 조여진 상류를 같은 속도로 때리지 않는다', async () => {
+    const h = harness();
+    h.net.feedStatus.set(CH, 404);
+    await h.poller.start();
+    expect(h.poller.failStreaks()[0]?.streak, '첫 폴이 실패로 세어지지 않았다').toBe(1);
+
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.poller.failStreaks()[0]?.streak, '60초 뒤 2회차가 돌지 않았다').toBe(2);
+
+    // ★ 반공허 가드 — 여기가 백오프의 전부다. 없으면 60초에 또 돈다.
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.poller.failStreaks()[0]?.streak, '60초 만에 또 돌았다 — 백오프가 없다').toBe(2);
+
+    h.clock.advance(60_000); // 2회차로부터 누적 120초
+    await flush();
+    expect(h.poller.failStreaks()[0]?.streak, '120초 뒤 3회차가 돌지 않았다').toBe(3);
+
+    h.poller.stop();
+  });
+
+  it('★ 한 번이라도 성공하면 즉시 기본 간격으로 돌아온다 — 천천히 회복하지 않는다', async () => {
+    const h = harness();
+    h.net.feedStatus.set(CH, 404);
+    await h.poller.start();
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.poller.failStreaks()[0]?.streak).toBe(2); // 다음은 120초 뒤
+
+    // 상류가 회복된다
+    h.net.feedStatus.delete(CH);
+    h.net.feeds.set(CH, EMPTY_FEED);
+    h.clock.advance(120_000);
+    await flush();
+    expect(h.poller.failStreaks()[0]?.streak, '성공이 연속 실패를 리셋하지 않았다').toBe(0);
+
+    // ★ 이제 60초 만에 다시 돌아야 한다 — 120초로 남아 있으면 안 된다
+    h.net.feedStatus.set(CH, 404);
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.poller.failStreaks()[0]?.streak, '성공 후에도 간격이 늘어난 채였다').toBe(1);
+
+    h.poller.stop();
+  });
 });

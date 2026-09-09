@@ -1050,7 +1050,12 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     clock,
     send: uploadSender,
     onEvent: (e) => {
-      logger.info(e, '업로드 처리');
+      // ★★ `duplicate` 는 **정상 상태**다 — 폴이 이미 처리한 항목을 다시 본 것이고,
+      //   피드가 최근 15건을 늘 담고 있으므로 폴마다 15건씩 나온다. 이것을 info 로
+      //   남기면 분당 30줄, 하루 4.7MB 가 쌓이고 **실제 사건이 96% 소음에 묻힌다**
+      //   (실배포 관측 2026-09-09: 전체 21,090줄 중 운영 경보는 33줄이었다).
+      if (e.outcome === 'duplicate') logger.debug(e, '업로드 처리');
+      else logger.info(e, '업로드 처리');
     },
   });
 

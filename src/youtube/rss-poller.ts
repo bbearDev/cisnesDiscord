@@ -38,6 +38,25 @@ import type { UploadFlow, UploadFlowResult } from './upload-flow.js';
  */
 export const YOUTUBE_FEED_URL_BASE = 'https://www.youtube.com/feeds/videos.xml';
 
+/**
+ * ★★ 연속 실패 시 폴 간격을 물린다 (실배포 관측, 2026-09-09).
+ *
+ *   `rssPollSec`(60초) 고정으로 돌던 초판은 상류가 우리를 조이기 시작해도
+ *   **같은 속도로 계속 때렸다.** 그날 실측: 첫 실패 02:01 이후 320회 실패가
+ *   쌓이는 동안 간격은 정확히 60초를 유지했다. 같은 시각 **휴대폰(다른 IP)에서는
+ *   같은 피드가 정상**이었고, 대조군으로 쓴 제3자 채널까지 같은 404 를 받았다 —
+ *   즉 채널이 아니라 **우리 IP 가 걸린 것**이고, 고정 간격 폴링이 그 상태를
+ *   스스로 연장하고 있었다.
+ *
+ * ★ 성공하면 **즉시** 기본 간격으로 돌아온다. 천천히 회복하면 상류가 풀린 뒤에도
+ *   한참 느린 채로 남아, 그 사이 업로드가 늦게 잡힌다.
+ *
+ * ★ 상한을 두는 이유: RSS 는 WebSub 이 죽었을 때의 **유일한 폴백**이다. 무한히
+ *   물리면 폴백이 사실상 사라진다. 15분이면 AC-24(업로드 공지)의 체감 한계 안이다.
+ */
+export const RSS_BACKOFF_FACTOR = 2;
+export const RSS_BACKOFF_MAX_SEC = 900;
+
 export function feedUrl(channelId: string): string {
   return `${YOUTUBE_FEED_URL_BASE}?channel_id=${encodeURIComponent(channelId)}`;
 }
@@ -172,9 +191,26 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
     async start(): Promise<RssPollOutcome[]> {
       const first = await pollAll();
       timer?.dispose();
-      timer = clock.setInterval(() => {
-        void pollAll();
-      }, opts.pollSec * 1_000);
+
+      // ★ `setInterval` 이 아니라 **자기 재예약**이다. 간격이 매 회 달라지므로
+      //   고정 주기 타이머로는 표현할 수 없다.
+      let delaySec = opts.pollSec;
+      const schedule = (): void => {
+        timer?.dispose();
+        timer = clock.setTimeout(() => {
+          void (async () => {
+            const out = await pollAll();
+            // ★ 한 채널이라도 성공하면 정상 속도로 돌아온다. 전부 실패할 때만 물린다 —
+            //   채널 하나의 일시적 실패가 다른 채널의 감지까지 늦추면 안 된다.
+            const anyOk = out.some((o) => o.ok);
+            delaySec = anyOk
+              ? opts.pollSec
+              : Math.min(delaySec * RSS_BACKOFF_FACTOR, RSS_BACKOFF_MAX_SEC);
+            schedule();
+          })();
+        }, delaySec * 1_000);
+      };
+      schedule();
       return first;
     },
 
