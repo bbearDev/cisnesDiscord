@@ -37,6 +37,14 @@ export const LiveApiChannelSchema = z.object({
   liveId: z.number().optional(),
   /** ★ `liveTitle` 칸은 **의도적으로 없다** — 상류가 싣지 않는다 (계획 §5.1 W2 Cons) */
   categoryValue: z.string().optional(),
+  /**
+   * ★ 웹훅과 **같은 이름·같은 규칙**이다 (`live-event-schema.ts` 의 주석 참조).
+   *   없으면 키가 없고, 방송 인식 시점에 없었으면 이후 폴링에서도 영영 오지 않는다.
+   *   이미 끝난 방송이면 제목·시청자 수와 함께 빠진다.
+   */
+  liveImageUrl: z.string().optional(),
+  /** 관측 당시의 채널 프로필 이미지. 썸네일이 없을 때의 대체 후보 */
+  channelImageUrl: z.string().optional(),
   uptimeMs: z.number().optional(),
   /** === `confirmed` */
   exact: z.boolean(),

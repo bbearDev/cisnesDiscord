@@ -10,6 +10,8 @@ import {
   jobFromPoll,
   jobFromWebhook,
   liveAnnounceLabel,
+  liveImageSource,
+  pickLiveImage,
 } from '../../src/live/live-announce.js';
 import { judgeLiveState } from '../../src/live/live-state.js';
 import { loadJsonFixture } from '../e2e/harness/fake-chzzkbot.js';
@@ -132,5 +134,99 @@ describe('감지 경로 · 라벨 · 링크', () => {
       detectedVia: 'webhook',
       label: 'live_start df09256e',
     });
+  });
+});
+
+describe('★★ 방송 썸네일 — 없을 수 있고, 그때 채널 프로필로 내려간다', () => {
+  const THUMB = 'https://video-phinf.pstatic.net/live/df09256e/thumbnail_720.jpg';
+  const PROFILE = 'https://nng-phinf.pstatic.net/profile/c3355ea2/profile.jpg';
+
+  it('웹훅 경로 — 발송 임베드까지 살아서 간다 (spec 만 채우고 빠뜨리면 안 보인다)', () => {
+    const parsed = parseLiveStartedEvent(loadJsonFixture('chzzkbot/webhook-live-started.json'));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const job = jobFromWebhook(parsed.event);
+    expect(job.embed.image).toBe(THUMB);
+    expect(buildAnnouncementEmbed(job.embed).image).toEqual({ url: THUMB });
+  });
+
+  it('★ 폴링 경로에도 **같은 이름의 칸**이 실려 온다 (liveTitle 과 다른 점이다)', () => {
+    const parsed = LiveApiResponseSchema.parse(loadJsonFixture('chzzkbot/api-live-announce.json'));
+    const { target } = selectChannel(parsed, OURS);
+    const j = judgeLiveState({ kind: 'channel', channel: target! });
+    expect(j.state).toBe('announce');
+    if (j.state !== 'announce') return;
+
+    const job = jobFromPoll(j.channel, j.liveHash);
+    expect(job.embed.image).toBe(THUMB);
+  });
+
+  it('★★ 썸네일이 없으면 채널 프로필이 대신 실린다 — 방송 시작 직후의 정상 상태다', () => {
+    const spec = buildLiveEmbedSpec({
+      channelId: OURS,
+      channelName: '시스네',
+      channelImageUrl: PROFILE,
+      detectedVia: 'webhook',
+    });
+    expect(spec.image).toBe(PROFILE);
+  });
+
+  it('★ 둘 다 없으면 image 칸 자체를 싣지 않는다 (자리표시자 그림을 넣지 않는다)', () => {
+    const spec = buildLiveEmbedSpec({ channelId: OURS, detectedVia: 'webhook' });
+    expect('image' in spec).toBe(false);
+    expect(buildAnnouncementEmbed(spec).image).toBeUndefined();
+  });
+
+  it('★★ 못 쓸 주소는 그림만 버린다 — 공지 자체는 그대로 나간다', () => {
+    // image.url 이 URL 로 안 읽히면 디스코드는 **요청 전체**를 400 으로 거절한다.
+    // 그림 한 장 때문에 방송 공지가 사라지는 것이 이 검사가 막는 사고다.
+    const spec = buildLiveEmbedSpec({
+      channelId: OURS,
+      channelName: '시스네',
+      liveImageUrl: 'not a url at all',
+      channelImageUrl: 'ftp://nope.example/pic.jpg',
+      detectedVia: 'webhook',
+    });
+    expect('image' in spec).toBe(false);
+    expect(spec.title).toBe('시스네 방송이 시작되었습니다');
+    expect(buildAnnouncementEmbed(spec).title).toBe('시스네 방송이 시작되었습니다');
+  });
+
+  it('★ 1순위가 못 쓸 주소면 2순위로 내려간다 — 후보를 각각 검사하기 때문이다', () => {
+    expect(pickLiveImage({ liveImageUrl: 'javascript:alert(1)', channelImageUrl: PROFILE })).toBe(PROFILE);
+  });
+
+  it('자리표시자가 남은 주소는 싣지 않는다 (상류도 막지만 증상이 로그에 안 남는다)', () => {
+    expect(pickLiveImage({ liveImageUrl: 'https://video-phinf.pstatic.net/image_{type}.jpg' })).toBeUndefined();
+  });
+
+  it('http · https 만 통과시킨다', () => {
+    expect(pickLiveImage({ liveImageUrl: 'http://example.com/a.jpg' })).toBe('http://example.com/a.jpg');
+    expect(pickLiveImage({ liveImageUrl: 'data:image/png;base64,AAAA' })).toBeUndefined();
+    expect(pickLiveImage({})).toBeUndefined();
+  });
+});
+
+describe('★ 그림이 어디서 왔는지 — none 과 dropped 는 고칠 곳이 다르다', () => {
+  const THUMB = 'https://video-phinf.pstatic.net/live/df09256e/thumbnail_720.jpg';
+  const PROFILE = 'https://nng-phinf.pstatic.net/profile/c3355ea2/profile.jpg';
+
+  it('썸네일을 썼으면 live', () => {
+    expect(liveImageSource({ liveImageUrl: THUMB, channelImageUrl: PROFILE })).toBe('live');
+  });
+
+  it('썸네일이 없어 프로필로 내려왔으면 channel', () => {
+    expect(liveImageSource({ channelImageUrl: PROFILE })).toBe('channel');
+  });
+
+  it('★ 키가 아예 안 왔으면 none — 단, 이 값은 더 못 쪼갠다', () => {
+    // 치지직이 안 준 경우와 상류 가드가 버린 경우가 여기서 섞인다.
+    // 둘 다 우리에게는 키가 오지 않으므로 구분은 chzzkbot 로그에만 있다 (런북 §8-d).
+    expect(liveImageSource({})).toBe('none');
+  });
+
+  it('★★ 실려 왔는데 우리가 버렸으면 dropped — 이때만 우리 쪽을 뒤진다', () => {
+    expect(liveImageSource({ liveImageUrl: 'ftp://x/y.jpg' })).toBe('dropped');
   });
 });

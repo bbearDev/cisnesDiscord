@@ -6,7 +6,9 @@ import { CHZZKBOT_TOKEN_HEADER } from '../../chzzk/live-api-client.js';
 import { parseLiveStartedBody } from '../../chzzk/live-event-schema.js';
 import {
   jobFromWebhook,
+  liveImageSource,
   type LiveAnnounceFn,
+  type LiveImageSource,
   type LiveLedger,
   type LiveSessionStore,
 } from '../../live/live-announce.js';
@@ -115,6 +117,12 @@ export interface LiveWebhookEvent {
   liveHash?: string;
   channelId?: string;
   reason?: string;
+  /**
+   * ★ `claimed` 에만 실린다 — 그림 계약이 **실제 방송에서** 어떻게 왔는지 남긴다.
+   *   `none`(상류가 안 실었다) 과 `dropped`(실렸는데 우리 검사가 버렸다) 는
+   *   고칠 곳이 다르므로, 임베드만 보고는 갈라낼 수 없는 그 차이를 여기서 남긴다.
+   */
+  image?: LiveImageSource;
 }
 
 /**
@@ -283,7 +291,7 @@ export function createChzzkbotWebhookRoute(deps: ChzzkbotWebhookDeps): Route {
         /* 발송기는 던지지 않기로 돼 있다. 새더라도 2xx 를 되돌리지 않는다 */
       });
 
-      emit({ type: 'claimed', liveHash: event.liveHash });
+      emit({ type: 'claimed', liveHash: event.liveHash, image: liveImageSource(event) });
       // ── 5. 2xx ─────────────────────────────────────────────────
       return ack(json(202, { ok: true, liveHash: event.liveHash }));
     },

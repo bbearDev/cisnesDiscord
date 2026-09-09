@@ -30,6 +30,8 @@ export interface LiveEmbedFields {
   color?: number;
   /** 푸터에 작게 적힌다 — `api-poll` 이 계속 보이면 웹훅이 죽어 있다는 뜻이다 */
   detectedVia?: string;
+  /** 본문 아래 큰 이미지의 URL. `EmbedSpec.image` 와 같은 칸이다 */
+  image?: string;
 }
 
 /** 치지직 라이브 주소. 채널 id 를 그대로 붙인다 */
@@ -64,7 +66,89 @@ export interface LiveEmbedInput {
    *   "방송이 방금 시작됐다"고 거짓말을 한다.
    */
   openedAt?: string | undefined;
+  /**
+   * 방송 썸네일. **1순위 그림 후보**다 (상류가 실어 보낼 때만 있다).
+   *
+   * ★ 방송 시작 직후에는 치지직이 아직 썸네일을 안 주기도 한다. 상류는 방송을
+   *   인식할 때 한 번만 훑으므로, 그때 없었으면 그 방송은 끝까지 없다.
+   */
+  liveImageUrl?: string | undefined;
+  /** 채널 프로필 이미지. **썸네일이 없을 때의 2순위**다 */
+  channelImageUrl?: string | undefined;
   detectedVia: LiveDetectedVia;
+}
+
+/**
+ * 임베드에 실어도 되는 그림 주소인가.
+ *
+ * ★★ **이 검사의 목적은 그림이 아니라 공지다.**
+ *   `image.url` 이 URL 로 파싱되지 않으면 디스코드는 임베드 하나가 아니라
+ *   **요청 전체를 400 으로 거절한다** — 그림 한 장 때문에 방송 공지가 통째로
+ *   사라진다. 그림이 빠지는 것은 견딜 수 있고 공지가 사라지는 것은 못 견디므로,
+ *   조금이라도 미심쩍으면 **그림만 버린다.**
+ *
+ * ★★ **세 검사 중 상류와 겹치는 것은 `{` 하나뿐이다** (상류 확인, 2026-09-09).
+ *   상류 가드는 자리표시자가 남았는지**만** 본다 — URL 로 파싱되는지도, `http(s)` 인지도
+ *   보지 않는다. 즉 치지직이 URL 이 아닌 문자열(상대 경로, `"none"` 같은 값)을 주면
+ *   **상류를 그대로 통과해 우리에게 온다.** 아래 두 검사는 중복이 아니라 이 계통에서
+ *   **유일한** 검사다. 지우지 말 것.
+ *
+ * ★ 겹치는 `{` 한 줄도 남겨 둔다. 자리표시자가 남은 주소는 어떤 경우에도 그림이
+ *   아니라 오탐이 있을 수 없고, 뚫렸을 때의 증상이 하필 *"디스코드가 404 를 조용히
+ *   삼켜 빈 자리만 남는"* 것이라 로그로도 안 잡히기 때문이다 (§S6 `maxresdefault` 와
+ *   같은 함정).
+ */
+function usableImageUrl(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  if (url.includes('{') || url.includes('}')) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+  return url;
+}
+
+/**
+ * 실을 그림 하나를 고른다 — **썸네일 → 채널 프로필** 순.
+ *
+ * ★ 두 후보를 **각각** 검사한다. 썸네일이 이상해서 버려지면 채널 프로필로 내려온다 —
+ *   1순위를 고르고 나서 검사하면 그 경우에 그림이 통째로 사라진다.
+ */
+export function pickLiveImage(input: {
+  liveImageUrl?: string | undefined;
+  channelImageUrl?: string | undefined;
+}): string | undefined {
+  return usableImageUrl(input.liveImageUrl) ?? usableImageUrl(input.channelImageUrl);
+}
+
+/**
+ * 그림이 **어디서 왔는지**. 로그 한 칸으로 남긴다.
+ *
+ * ★ 공지에 그림이 안 보일 때 `none`(키가 안 왔다)과 `dropped`(왔는데 우리가 버렸다)는
+ *   **고칠 곳이 서로 다르다.** 이 구분이 없으면 둘 다 "그림이 없네"로 보이고,
+ *   그때 사람이 상류와 우리 중 어느 쪽을 뒤져야 하는지 알 수 없다.
+ *
+ * ★★ **`none` 은 여기서 더 못 쪼갠다** — 두 경우가 섞여 있다 (상류 확인, 2026-09-09):
+ *   (a) 치지직이 애초에 안 줬다 — 정상. 방송 시작 직후에 흔하다.
+ *   (b) 치지직이 줬는데 **상류 가드가 버렸다** — 형식이 바뀐 것이고 사람이 알아야 한다.
+ *   (b) 여도 우리에게는 키가 아예 오지 않으므로 둘이 똑같이 보인다. 구분은 **chzzkbot
+ *   로그에만** 남는다 — 방송이 한참 진행 중인데 `none` 이 계속 나오면 그쪽을 봐야 한다
+ *   (`docs/runbook-ops.md` §8-d 에 확인 명령을 적어 뒀다).
+ */
+export type LiveImageSource = 'live' | 'channel' | 'none' | 'dropped';
+
+export function liveImageSource(input: {
+  liveImageUrl?: string | undefined;
+  channelImageUrl?: string | undefined;
+}): LiveImageSource {
+  const picked = pickLiveImage(input);
+  if (picked !== undefined) return picked === input.liveImageUrl ? 'live' : 'channel';
+  return input.liveImageUrl === undefined && input.channelImageUrl === undefined
+    ? 'none'
+    : 'dropped';
 }
 
 /**
@@ -82,6 +166,7 @@ export function buildLiveEmbedSpec(input: LiveEmbedInput): LiveEmbedFields {
     input.liveTitle === undefined
       ? `${name} 채널이 방송 중입니다. 아래 링크에서 바로 보실 수 있습니다.`
       : `${name} 채널에서 방송이 시작되었습니다.`;
+  const image = pickLiveImage(input);
 
   return {
     title,
@@ -91,6 +176,9 @@ export function buildLiveEmbedSpec(input: LiveEmbedInput): LiveEmbedFields {
     ...(input.openedAt === undefined ? {} : { timestamp: input.openedAt }),
     color: LIVE_EMBED_COLOR,
     detectedVia: input.detectedVia,
+    // ★ 그림도 같은 규율이다 — 쓸 만한 후보가 없으면 칸 자체를 뺀다.
+    //   자리표시자 그림을 넣으면 그게 시청자에게 그대로 보인다.
+    ...(image === undefined ? {} : { image }),
   };
 }
 
@@ -157,6 +245,8 @@ export function jobFromWebhook(
       channelName: event.channelName,
       liveTitle: event.liveTitle,
       openedAt: event.openedAt,
+      liveImageUrl: event.liveImageUrl,
+      channelImageUrl: event.channelImageUrl,
       detectedVia: 'webhook',
     }),
     label: liveAnnounceLabel(event.liveHash),
@@ -184,7 +274,10 @@ export function jobFromPoll(
       channelId: channel.channelId,
       channelName: channel.channelName,
       // ★ liveTitle 을 넘기지 않는다 — 폴링 응답에는 그 칸이 없다.
+      //   그림은 다르다: 두 칸 다 폴링 응답에도 **같은 이름으로** 실려 온다.
       openedAt: channel.openedAt,
+      liveImageUrl: channel.liveImageUrl,
+      channelImageUrl: channel.channelImageUrl,
       detectedVia: via,
     }),
     label: liveAnnounceLabel(liveHash),
