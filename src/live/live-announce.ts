@@ -355,6 +355,47 @@ export function jobFromPoll(
   };
 }
 
+/** 아웃박스가 다시 집은 라이브 한 건. `live_sessions` 에 남아 있는 것만 되살린다 */
+export interface OutboxLiveInput {
+  channelId: string;
+  liveHash: string;
+  /** 원래 감지 경로. 재발송이라고 바꾸지 않는다 — 그 방송을 무엇이 찾았는지가 사실이다 */
+  detectedVia: LiveDetectedVia;
+  liveTitle?: string | undefined;
+  openedAt?: string | undefined;
+}
+
+/**
+ * 아웃박스 재발송용 공지 작업 (§S3 FM5).
+ *
+ * ★★ **`imageSource` 가 `'unavailable'` 인 유일한 자리다.** 그림 주소를 저장하는 컬럼이
+ *   `live_sessions` 에 없어(§8-a) 재조립할 재료가 없다. 여기에 `'none'` 을 적으면
+ *   *"상류가 안 보냈다"* 와 뭉쳐서, 진단하는 사람이 **있지도 않은 상류 사고를 찾으러
+ *   간다.** 그 오진은 로그에 아무 흔적도 남기지 않는다.
+ *
+ * ★ 이 함수가 존재하는 이유가 그것이다 — composition-root 에서 손으로 적은 리터럴이면
+ *   타입 검사는 칸이 빠진 것만 잡고 **값이 틀린 것은 못 잡는다.** 다른 두 빌더와 같은
+ *   자리에 두고 테스트로 못 박는다.
+ *
+ * ★ `webhookReceivedAtMs` · `openedAt` 을 작업에 싣지 않는다 — 둘 다 지연 지표의
+ *   시작점이고, 재발송의 게시 시각을 원래 방송 시작 시각과 재면 그 지표가
+ *   *"우리가 늦게 보낸 시간"* 을 방송 지연으로 센다. 임베드 타임스탬프에는 그대로 들어간다.
+ */
+export function jobFromOutbox(input: OutboxLiveInput): LiveAnnounceJob {
+  return {
+    liveHash: input.liveHash,
+    detectedVia: input.detectedVia,
+    embed: buildLiveEmbedSpec({
+      channelId: input.channelId,
+      liveTitle: input.liveTitle,
+      openedAt: input.openedAt,
+      detectedVia: input.detectedVia,
+    }),
+    label: liveAnnounceLabel(input.liveHash),
+    imageSource: 'unavailable',
+  };
+}
+
 // ══════════════════════════════════════════════════════════════════
 //  포트
 // ══════════════════════════════════════════════════════════════════

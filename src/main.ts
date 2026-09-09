@@ -33,8 +33,7 @@ import type {
 import type { GateGateway } from './discord/gate.js';
 import { buildUploadPayload, uploadLabel } from './discord/upload-embed.js';
 import {
-  buildLiveEmbedSpec,
-  liveAnnounceLabel,
+  jobFromOutbox,
   type LiveAnnounceFn,
   type LiveAnnounceJob,
   type LiveDetectedVia,
@@ -860,21 +859,17 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       // 세션 행이 남아 있으면 제목·시작 시각까지 그대로 되살린다.
       const session = liveSessions.get(row.eventKey);
       const via = toLiveVia(row.detectedVia);
-      await liveAnnounce({
-        liveHash: row.eventKey,
-        detectedVia: via,
-        embed: buildLiveEmbedSpec({
+      // ★ 작업 조립은 `live-announce.ts` 가 한다 — 여기서 손으로 적으면 `imageSource` 를
+      //   테스트가 지킬 수 없다 (다른 두 경로와 같은 자리에 둔다).
+      await liveAnnounce(
+        jobFromOutbox({
           channelId: file.live.channelId,
+          liveHash: row.eventKey,
+          detectedVia: via,
           ...(session?.liveTitle === undefined ? {} : { liveTitle: session.liveTitle }),
           ...(session?.openedAt === undefined ? {} : { openedAt: session.openedAt }),
-          detectedVia: via,
         }),
-        label: liveAnnounceLabel(row.eventKey),
-        // ★ 그림 주소는 어디에도 저장하지 않는다 — `live_sessions` 에 컬럼이 없다(§8-a).
-        //   그래서 재발송 임베드에는 그림이 없다. `none`(상류가 안 보냈다) 과 구분되는
-        //   값을 쓴다 — 뭉치면 있지도 않은 상류 사고를 찾으러 가게 된다.
-        imageSource: 'unavailable',
-      });
+      );
       return;
     }
 

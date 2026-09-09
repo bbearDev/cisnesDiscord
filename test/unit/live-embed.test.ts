@@ -10,6 +10,7 @@ import {
   jobFromPoll,
   jobFromWebhook,
   droppedImageFields,
+  jobFromOutbox,
   liveAnnounceLabel,
   liveImageSource,
   pickLiveImage,
@@ -279,5 +280,48 @@ describe('★★ 그림 관측 — "무엇을 실었나" 와 "무엇을 버렸�
     const job = jobFromWebhook(web.event);
     expect(job.imageSource).toBe('live');
     expect('droppedImageFields' in job).toBe(false);
+  });
+});
+
+describe('★★ 아웃박스 재발송 — unavailable 은 none 이 아니다', () => {
+  const base = { channelId: OURS, liveHash: 'df09256e', detectedVia: 'webhook' } as const;
+
+  it('★★ 재발송 작업의 imageSource 는 unavailable 이다', () => {
+    // ★ 여기에 `'none'` 을 적으면 "상류가 안 보냈다" 와 뭉쳐, 진단하는 사람이 있지도 않은
+    //   상류 사고를 찾으러 간다. 그 오진은 로그에 아무 흔적도 남기지 않으므로 조용하다.
+    //   필수 칸이라 **빠뜨리는 것**은 tsc 가 막지만 **틀리게 적는 것**은 이 줄만 막는다.
+    const job = jobFromOutbox(base);
+    expect(job.imageSource).toBe('unavailable');
+    expect(job.imageSource).not.toBe('none');
+  });
+
+  it('그림이 없으니 임베드에도 버린 칸에도 아무것도 없다', () => {
+    const job = jobFromOutbox(base);
+    expect('image' in job.embed).toBe(false);
+    expect('droppedImageFields' in job).toBe(false);
+  });
+
+  it('세션 행이 남아 있으면 제목·시작 시각을 되살린다', () => {
+    const job = jobFromOutbox({
+      ...base,
+      liveTitle: '오늘은 잡담방송',
+      openedAt: '2026-09-06T18:56:39.000Z',
+    });
+    expect(job.embed.title).toBe('오늘은 잡담방송');
+    expect(job.embed.timestamp).toBe('2026-09-06T18:56:39.000Z');
+    expect(job.label).toBe('live_start df09256e');
+  });
+
+  it('★ 원래 감지 경로를 그대로 싣는다 — 그 방송을 무엇이 찾았는지가 사실이다', () => {
+    expect(jobFromOutbox({ ...base, detectedVia: 'api-poll' }).detectedVia).toBe('api-poll');
+    expect(jobFromOutbox({ ...base, detectedVia: 'api-poll' }).embed.detectedVia).toBe('api-poll');
+  });
+
+  it('★ 지연 지표의 시작점은 싣지 않는다 — 재발송 지연을 방송 지연으로 세게 된다', () => {
+    const job = jobFromOutbox({ ...base, openedAt: '2026-09-06T18:56:39.000Z' });
+    expect('openedAt' in job).toBe(false);
+    expect('webhookReceivedAtMs' in job).toBe(false);
+    // 임베드 타임스탬프에는 그대로 들어간다 — 사람이 읽는 값과 기계가 읽는 축은 다르다.
+    expect(job.embed.timestamp).toBe('2026-09-06T18:56:39.000Z');
   });
 });
