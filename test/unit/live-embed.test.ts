@@ -9,6 +9,7 @@ import {
   CHZZK_LIVE_URL_PREFIX,
   jobFromPoll,
   jobFromWebhook,
+  droppedImageFields,
   liveAnnounceLabel,
   liveImageSource,
   pickLiveImage,
@@ -208,25 +209,75 @@ describe('★★ 방송 썸네일 — 없을 수 있고, 그때 채널 프로필
   });
 });
 
-describe('★ 그림이 어디서 왔는지 — none 과 dropped 는 고칠 곳이 다르다', () => {
+describe('★★ 그림 관측 — "무엇을 실었나" 와 "무엇을 버렸나" 는 다른 질문이다', () => {
   const THUMB = 'https://video-phinf.pstatic.net/live/df09256e/thumbnail_720.jpg';
   const PROFILE = 'https://nng-phinf.pstatic.net/profile/c3355ea2/profile.jpg';
+  const BAD = '/relative/thumb.jpg';
 
-  it('썸네일을 썼으면 live', () => {
-    expect(liveImageSource({ liveImageUrl: THUMB, channelImageUrl: PROFILE })).toBe('live');
+  it('썸네일을 썼으면 live, 버린 것은 없다', () => {
+    const input = { liveImageUrl: THUMB, channelImageUrl: PROFILE };
+    expect(liveImageSource(input)).toBe('live');
+    expect(droppedImageFields(input)).toEqual([]);
   });
 
-  it('썸네일이 없어 프로필로 내려왔으면 channel', () => {
-    expect(liveImageSource({ channelImageUrl: PROFILE })).toBe('channel');
+  it('썸네일 키가 없어 프로필로 내려왔으면 channel, 버린 것은 없다', () => {
+    const input = { channelImageUrl: PROFILE };
+    expect(liveImageSource(input)).toBe('channel');
+    expect(droppedImageFields(input)).toEqual([]);
   });
 
-  it('★ 키가 아예 안 왔으면 none — 단, 이 값은 더 못 쪼갠다', () => {
-    // 치지직이 안 준 경우와 상류 가드가 버린 경우가 여기서 섞인다.
-    // 둘 다 우리에게는 키가 오지 않으므로 구분은 chzzkbot 로그에만 있다 (런북 §8-d).
+  it('★★ 썸네일을 **버려서** 프로필로 내려온 경우 — image 는 channel 이지만 버린 것이 남는다', () => {
+    // ★ 이 조합이 이 파일의 핵심이다. 우리 검사가 실제로 발동하는 가장 흔한 모양인데,
+    //   `image` 만 보면 "썸네일이 없어 프로필로 내려감"(= 정상)과 구분되지 않는다.
+    //   그래서 두 칸으로 갈랐다. 한 칸이면 이 사고가 "정상"으로 분류돼 아무도 안 본다.
+    const input = { liveImageUrl: BAD, channelImageUrl: PROFILE };
+    expect(pickLiveImage(input)).toBe(PROFILE);
+    expect(liveImageSource(input)).toBe('channel');
+    expect(droppedImageFields(input)).toEqual(['liveImageUrl']);
+  });
+
+  it('★ 키가 아예 안 왔으면 none 이고 버린 것도 없다 — 상류가 안 보냈다는 뜻이다', () => {
     expect(liveImageSource({})).toBe('none');
+    expect(droppedImageFields({})).toEqual([]);
   });
 
-  it('★★ 실려 왔는데 우리가 버렸으면 dropped — 이때만 우리 쪽을 뒤진다', () => {
-    expect(liveImageSource({ liveImageUrl: 'ftp://x/y.jpg' })).toBe('dropped');
+  it('★ 둘 다 버렸으면 none + 두 칸 — "상류가 안 보냈다" 와 이 값으로 갈린다', () => {
+    const input = { liveImageUrl: BAD, channelImageUrl: 'ftp://x/y.jpg' };
+    expect(liveImageSource(input)).toBe('none');
+    expect(droppedImageFields(input)).toEqual(['liveImageUrl', 'channelImageUrl']);
+  });
+
+  it('★ 쓰지 않은 칸이라도 못 쓸 값이면 싣는다 — 2순위를 안전한 대체로 전제하지 않는다', () => {
+    // 상류도 "채널 프로필에 자리표시자가 없다"를 확인된 사실이 아니라 추정이라고 적어 뒀다.
+    const input = { liveImageUrl: THUMB, channelImageUrl: 'image_{type}.jpg' };
+    expect(liveImageSource(input)).toBe('live');
+    expect(droppedImageFields(input)).toEqual(['channelImageUrl']);
+  });
+
+  it('★★ 세 경로가 같은 관측을 싣는다 — 폴링만 조용해지면 웹훅이 죽었을 때 진단이 막힌다', () => {
+    const parsed = LiveApiResponseSchema.parse(loadJsonFixture('chzzkbot/api-live-announce.json'));
+    const { target } = selectChannel(parsed, OURS);
+    const j = judgeLiveState({ kind: 'channel', channel: target! });
+    if (j.state !== 'announce') throw new Error('픽스처가 announce 가 아니다');
+
+    for (const via of ['api-poll', 'recovery'] as const) {
+      const job = jobFromPoll({ ...j.channel, liveImageUrl: BAD }, j.liveHash, via);
+      expect(job.imageSource).toBe('channel');
+      expect(job.droppedImageFields).toEqual(['liveImageUrl']);
+    }
+
+    const web = parseLiveStartedEvent(loadJsonFixture('chzzkbot/webhook-live-started.json'));
+    if (!web.ok) throw new Error('픽스처가 계약을 만족하지 않는다');
+    const job = jobFromWebhook({ ...web.event, liveImageUrl: BAD });
+    expect(job.imageSource).toBe('channel');
+    expect(job.droppedImageFields).toEqual(['liveImageUrl']);
+  });
+
+  it('버린 것이 없으면 작업에 칸 자체를 싣지 않는다 — 늘 떠 있으면 신호가 흐려진다', () => {
+    const web = parseLiveStartedEvent(loadJsonFixture('chzzkbot/webhook-live-started.json'));
+    if (!web.ok) throw new Error('픽스처가 계약을 만족하지 않는다');
+    const job = jobFromWebhook(web.event);
+    expect(job.imageSource).toBe('live');
+    expect('droppedImageFields' in job).toBe(false);
   });
 });

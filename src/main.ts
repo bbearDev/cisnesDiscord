@@ -806,6 +806,18 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       logger.error({ liveHash: job.liveHash }, '방송 공지 채널이 설정돼 있지 않습니다');
       return;
     }
+    // ★ 웹훅·폴링·기동복구가 **전부** 여기를 지난다. 그림 관측을 경로별 이벤트가 아니라
+    //   이 한 줄에 두는 이유다 — 폴링이 도는 상황은 웹훅이 죽었을 때이고, 그때 웹훅
+    //   로그만 보라고 안내하면 진단이 첫 단계에서 막힌다 (런북 §8-d).
+    logger.info(
+      {
+        liveHash: job.liveHash,
+        detectedVia: job.detectedVia,
+        image: job.imageSource,
+        ...(job.droppedImageFields === undefined ? {} : { imageDropped: job.droppedImageFields }),
+      },
+      '방송 공지 그림',
+    );
     const result = await announcer.announce({
       channelId,
       // ★ `LiveEmbedFields` → `EmbedSpec`. 두 타입이 갈리면 이 줄이 깨진다.
@@ -858,6 +870,10 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
           detectedVia: via,
         }),
         label: liveAnnounceLabel(row.eventKey),
+        // ★ 그림 주소는 어디에도 저장하지 않는다 — `live_sessions` 에 컬럼이 없다(§8-a).
+        //   그래서 재발송 임베드에는 그림이 없다. `none`(상류가 안 보냈다) 과 구분되는
+        //   값을 쓴다 — 뭉치면 있지도 않은 상류 사고를 찾으러 가게 된다.
+        imageSource: 'unavailable',
       });
       return;
     }

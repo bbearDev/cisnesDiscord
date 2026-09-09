@@ -87,11 +87,11 @@ export interface LiveEmbedInput {
  *   사라진다. 그림이 빠지는 것은 견딜 수 있고 공지가 사라지는 것은 못 견디므로,
  *   조금이라도 미심쩍으면 **그림만 버린다.**
  *
- * ★★ **세 검사 중 상류와 겹치는 것은 `{` 하나뿐이다** (상류 확인, 2026-09-09).
- *   상류 가드는 자리표시자가 남았는지**만** 본다 — URL 로 파싱되는지도, `http(s)` 인지도
- *   보지 않는다. 즉 치지직이 URL 이 아닌 문자열(상대 경로, `"none"` 같은 값)을 주면
- *   **상류를 그대로 통과해 우리에게 온다.** 아래 두 검사는 중복이 아니라 이 계통에서
- *   **유일한** 검사다. 지우지 말 것.
+ * ★★ **세 검사 중 상류와 겹치는 것은 `{` 하나뿐이다** (상류 코드 확인, 2026-09-09).
+ *   상류는 `{type}` 을 `720` 으로 **먼저 채운 뒤** 그래도 `{` 가 남았는지**만** 본다 —
+ *   URL 로 파싱되는지도, `http(s)` 인지도 보지 않는다. 즉 치지직이 URL 이 아닌
+ *   문자열(상대 경로, `"none"` 같은 값)을 주면 **상류를 그대로 통과해 우리에게 온다.**
+ *   아래 두 검사는 중복이 아니라 이 계통에서 **유일한** 검사다. 지우지 말 것.
  *
  * ★ 겹치는 `{` 한 줄도 남겨 둔다. 자리표시자가 남은 주소는 어떤 경우에도 그림이
  *   아니라 오탐이 있을 수 없고, 뚫렸을 때의 증상이 하필 *"디스코드가 404 를 조용히
@@ -117,38 +117,71 @@ function usableImageUrl(url: string | undefined): string | undefined {
  * ★ 두 후보를 **각각** 검사한다. 썸네일이 이상해서 버려지면 채널 프로필로 내려온다 —
  *   1순위를 고르고 나서 검사하면 그 경우에 그림이 통째로 사라진다.
  */
-export function pickLiveImage(input: {
+export interface LiveImageCandidates {
   liveImageUrl?: string | undefined;
   channelImageUrl?: string | undefined;
-}): string | undefined {
+}
+
+export function pickLiveImage(input: LiveImageCandidates): string | undefined {
   return usableImageUrl(input.liveImageUrl) ?? usableImageUrl(input.channelImageUrl);
 }
 
-/**
- * 그림이 **어디서 왔는지**. 로그 한 칸으로 남긴다.
- *
- * ★ 공지에 그림이 안 보일 때 `none`(키가 안 왔다)과 `dropped`(왔는데 우리가 버렸다)는
- *   **고칠 곳이 서로 다르다.** 이 구분이 없으면 둘 다 "그림이 없네"로 보이고,
- *   그때 사람이 상류와 우리 중 어느 쪽을 뒤져야 하는지 알 수 없다.
- *
- * ★★ **`none` 은 여기서 더 못 쪼갠다** — 두 경우가 섞여 있다 (상류 확인, 2026-09-09):
- *   (a) 치지직이 애초에 안 줬다 — 정상. 방송 시작 직후에 흔하다.
- *   (b) 치지직이 줬는데 **상류 가드가 버렸다** — 형식이 바뀐 것이고 사람이 알아야 한다.
- *   (b) 여도 우리에게는 키가 아예 오지 않으므로 둘이 똑같이 보인다. 구분은 **chzzkbot
- *   로그에만** 남는다 — 방송이 한참 진행 중인데 `none` 이 계속 나오면 그쪽을 봐야 한다
- *   (`docs/runbook-ops.md` §8-d 에 확인 명령을 적어 뒀다).
- */
-export type LiveImageSource = 'live' | 'channel' | 'none' | 'dropped';
+/** 상류가 주는 그림 칸 이름. 로그에 그대로 찍는다 */
+export type LiveImageField = 'liveImageUrl' | 'channelImageUrl';
 
-export function liveImageSource(input: {
-  liveImageUrl?: string | undefined;
-  channelImageUrl?: string | undefined;
-}): LiveImageSource {
+/**
+ * **무엇을 실었나.** `docs/runbook-ops.md` §8-d 의 첫 칸이다.
+ *
+ * ★★ 이 값은 *"우리 검사가 발동했는가"* 를 **말해 주지 않는다.** 그건 별개 질문이고
+ *   `droppedImageFields` 가 답한다. 한 칸에 욱여넣으면 **가장 흔한 사고 모양이
+ *   `channel`(= 정상) 로 분류돼 아무도 안 본다** — 썸네일이 못 쓸 값이고 채널 프로필은
+ *   멀쩡한 경우가 그것이다. 두 질문을 갈라 두는 이유가 이것 하나다.
+ */
+export type LiveImageSource =
+  | 'live'
+  | 'channel'
+  | 'none'
+  /**
+   * ★ **그림 정보 자체가 없는 경로.** 아웃박스 재발송이 유일하다 — 원장·`live_sessions`
+   *   어디에도 그림 주소 컬럼이 없어(§8-a: 마이그레이션 `002` 선행) 재조립할 재료가 없다.
+   *
+   * ★★ 이것을 `none` 으로 뭉치지 않는다. `none` 은 *"상류가 안 보냈다"* 이고 이 값은
+   *   *"우리가 안 들고 있다"* 라서, 뭉치면 진단하는 사람이 있지도 않은 상류 사고를
+   *   찾으러 간다. 서로 다른 사정을 한 값에 넣지 않는다.
+   */
+  | 'unavailable';
+
+/** ★ `unavailable` 을 돌려주지 않는다 — 그건 후보 유무의 문제가 아니라 경로의 성질이다 */
+export function liveImageSource(input: LiveImageCandidates): LiveImageSource {
   const picked = pickLiveImage(input);
-  if (picked !== undefined) return picked === input.liveImageUrl ? 'live' : 'channel';
-  return input.liveImageUrl === undefined && input.channelImageUrl === undefined
-    ? 'none'
-    : 'dropped';
+  if (picked === undefined) return 'none';
+  return picked === input.liveImageUrl ? 'live' : 'channel';
+}
+
+/**
+ * **무엇을 버렸나** — 상류가 실어 보냈는데 `usableImageUrl` 이 되돌린 칸들.
+ *
+ * ★★ 비어 있지 않다는 것은 **그 자체로 "우리 쪽을 뒤져라"** 다. 어떤 그림이 실제로
+ *   실렸는지와 무관하다 — 2순위가 받아 줘서 공지가 멀쩡해 보여도, 1순위가 버려졌다는
+ *   사실은 치지직 형식이 우리가 아는 모양이 아니라는 뜻이고 그 기록은 **여기에만**
+ *   남는다(상류는 `{` 만 보므로 이 값은 상류 로그를 통과한 것이다).
+ *
+ * ★ 2순위를 안전한 대체로 전제하지 않는다. 상류도 *"채널 프로필에 자리표시자가 없다"* 를
+ *   **확인된 사실이 아니라 추정**이라고 적어 뒀다 — 근거의 수준이 썸네일과 같다.
+ *   그래서 실제로 쓰지 않은 칸이라도 못 쓸 값이면 그대로 싣는다.
+ *
+ * ★ `none`(키가 안 옴) 과 "전부 버림" 도 이 값으로 갈린다: 비어 있으면 상류가 안 보낸
+ *   것이고, 두 칸이 들어 있으면 우리가 전부 버린 것이다.
+ */
+export function droppedImageFields(input: LiveImageCandidates): readonly LiveImageField[] {
+  const dropped: LiveImageField[] = [];
+  if (input.liveImageUrl !== undefined && usableImageUrl(input.liveImageUrl) === undefined) {
+    dropped.push('liveImageUrl');
+  }
+  if (input.channelImageUrl !== undefined && usableImageUrl(input.channelImageUrl) === undefined) {
+    dropped.push('channelImageUrl');
+  }
+  return dropped;
 }
 
 /**
@@ -221,6 +254,21 @@ export interface LiveAnnounceJob {
    *   이 칸은 기계가 읽는 축이라, 한쪽 문안이 바뀌면 다른 쪽이 조용히 망가진다.
    */
   openedAt?: string | undefined;
+  /**
+   * 임베드에 **무엇을 실었나** (`live` · `channel` · `none`).
+   *
+   * ★ 공지 발송 지점에서 로그로 남는다. 웹훅·폴링·기동복구 **세 경로가 전부** 이 구조체를
+   *   지나므로, 관측을 여기 실으면 경로마다 배선을 따로 하지 않아도 된다 — 특히 기동
+   *   복구에는 이벤트 채널 자체가 없어서 다른 방법이 없다.
+   */
+  imageSource: LiveImageSource;
+  /**
+   * **무엇을 버렸나.** 비어 있으면 아예 싣지 않는다.
+   *
+   * ★★ 이 칸이 보이면 **그것만으로 우리 쪽을 뒤질 이유**다. `imageSource` 가 무엇이든
+   *   상관없다 — 2순위가 받아 줘서 공지가 멀쩡해 보이는 경우가 오히려 흔하다.
+   */
+  droppedImageFields?: readonly LiveImageField[] | undefined;
 }
 
 /** **절대 reject 하지 않는다** (계약상 `announcer` 가 그렇게 만들어져 있다) */
@@ -228,6 +276,24 @@ export type LiveAnnounceFn = (job: LiveAnnounceJob) => Promise<void>;
 
 export function liveAnnounceLabel(liveHash: string): string {
   return `live_start ${liveHash}`;
+}
+
+/**
+ * 그림 관측 두 칸을 만든다.
+ *
+ * ★ 두 빌더가 이 함수를 공유한다. 각자 적으면 한쪽 경로만 고친 날 **폴링으로 온 방송의
+ *   그림 사고가 조용해진다** — 하필 폴링이 도는 상황은 웹훅이 죽어 있을 때다.
+ */
+function liveImageObservation(
+  input: LiveImageCandidates,
+): Pick<LiveAnnounceJob, 'imageSource' | 'droppedImageFields'> {
+  const dropped = droppedImageFields(input);
+  return {
+    imageSource: liveImageSource(input),
+    // 비어 있으면 칸을 싣지 않는다 — 로그 줄에 `imageDropped: []` 가 늘 떠 있으면
+    // 그게 신호였다는 사실이 흐려진다.
+    ...(dropped.length === 0 ? {} : { droppedImageFields: dropped }),
+  };
 }
 
 /**
@@ -252,6 +318,7 @@ export function jobFromWebhook(
     label: liveAnnounceLabel(event.liveHash),
     ...(receivedAtMs === undefined ? {} : { webhookReceivedAtMs: receivedAtMs }),
     openedAt: event.openedAt,
+    ...liveImageObservation(event),
   };
 }
 
@@ -284,6 +351,7 @@ export function jobFromPoll(
     // ★ `webhookReceivedAtMs` 는 넣지 않는다 — 이 경로에는 웹훅이 없다.
     //   `openedAt` 은 관측 전용 지표라 경로를 가리지 않는다.
     openedAt: channel.openedAt,
+    ...liveImageObservation(channel),
   };
 }
 
