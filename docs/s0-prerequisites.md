@@ -90,11 +90,17 @@
 - **S6 (유튜브)**: WebSub 허브가 공개 HTTPS 로 우리에게 푸시한다. 종단이 없으면 구독 검증(`hub.challenge`)부터 실패해 **AC-20 이 성립하지 않는다.**
 - 반면 **S5 (라이브 알림)는 막히지 않는다** — 웹훅 수신도 `/api/live` 폴링도 둘 다 루프백(`127.0.0.1:8080`↔`127.0.0.1:8081`)이라 프록시가 필요 없다. **S5 를 먼저 완주할 수 있다.**
 
-**공개해야 하는 경로는 딱 둘뿐이다** (계획이 확정한 포트 배정 기준):
+**공개해야 하는 경로는 셋뿐이고, 경로를 바꾸지 않고 그대로 넘긴다** (앱이 서비스하는 경로 그 자체다):
 ```
-https://<HOST>/oauth/chzzk/<cisnes 콜백 경로>  →  127.0.0.1:8081/oauth/callback
-https://<HOST>/websub/youtube/:chId            →  127.0.0.1:8081/websub/:chId
+https://<HOST>/oauth/start              →  <앱>:8081/oauth/start
+https://<HOST>/oauth/callback           →  <앱>:8081/oauth/callback
+https://<HOST>/websub?channel=<채널ID>   →  <앱>:8081/websub   (질의문자열 그대로)
 ```
+> ★★ rewrite · strip_prefix 를 쓰지 않는다. WebSub 콜백 주소는 봇이 `publicBaseUrl + /websub`
+> 로 만들어 **허브에 직접 등록**하므로, 프록시가 다른 모양을 기대하면 구독이 영영 확정되지
+> 않는다 (`websub_subscriptions.lease_seconds` 가 빈 채로 남는다).
+> `<앱>` 은 프록시와 같은 호스트면 `127.0.0.1`, 다른 호스트면 앱 호스트의 LAN 주소다.
+
 chzzkbot 웹훅(→8081)과 우리 폴링(→8080)은 루프백이므로 프록시 대상이 아니다.
 
 > ⚠️ 위 콜백 경로가 **chzzkbot 의 기존 `CHZZK_REDIRECT_URI` 경로와 겹치면 안 된다**(S0-2). 콜백은 `code`/`state` 만 받으므로 어느 앱의 코드인지 구분할 수 없다.

@@ -14,9 +14,10 @@
 ```
                     공개 HTTPS (프록시가 종단)
                     ┌─────────────────────────────┐
-  치지직 OAuth ─────▶│ /oauth/chzzk/<콜백>          │
-  유튜브 WebSub 허브 ▶│ /websub/youtube/:chId       │──▶ 127.0.0.1:8081
-                    └─────────────────────────────┘         cisnesDiscord
+  시청자(브라우저) ──▶│ /oauth/start                │
+  치지직 OAuth ─────▶│ /oauth/callback             │──▶ cubeat:8081
+  유튜브 WebSub 허브 ▶│ /websub?channel=<채널ID>     │         cisnesDiscord
+                    └─────────────────────────────┘
                                                                  │  ▲
                             루프백 (프록시 불필요)                  │  │
    chzzkbot ──웹훅 POST──▶ 127.0.0.1:8081/hooks/chzzkbot/live ────┘  │
@@ -139,9 +140,25 @@ curl -sS -o /dev/null -w 'wan %{http_code}\n' -m 5 http://<공인 IP>:8081/healt
 
 ### 2-2. 프록시 경로 도달 확인
 
+**★★ 공개 경로는 이 셋이다. 코드가 정하며, 프록시는 그대로 넘기기만 한다.**
+
+| 공개 경로 | 앱 경로 | 누가 부르나 |
+|---|---|---|
+| `/oauth/start` | 같음 | 시청자 브라우저 |
+| `/oauth/callback` | 같음 | 치지직 OAuth |
+| `/websub` (질의문자열 `?channel=<채널ID>`) | 같음 | 유튜브 WebSub 허브 |
+
+> ★★ **경로를 다시 쓰거나(rewrite) 접두어를 떼면 안 된다.** WebSub 콜백 주소는 봇이
+> `publicBaseUrl + /websub` 로 **직접 만들어 허브에 등록한다**(`main.ts` 의 `callbackUrl`).
+> 프록시에서 다른 모양을 기대하면 허브가 등록된 그 주소로 왔을 때 안 맞고, 증상은
+> **구독이 영영 확정되지 않는 것**이다 — `websub_subscriptions.lease_seconds` 가 빈 채로
+> 남는다. 조용하고, 업로드 공지는 RSS 폴백으로 굴러가서 더 늦게 발견된다.
+
+
 ```bash
-curl -sS -o /dev/null -w 'oauth  %{http_code}\n'  "https://<HOST>/oauth/chzzk/callback"
-curl -sS -o /dev/null -w 'websub %{http_code}\n'  "https://<HOST>/websub/youtube/<채널ID>"
+curl -sS -o /dev/null -w 'start    %{http_code}\n' "https://<HOST>/oauth/start"
+curl -sS -o /dev/null -w 'callback %{http_code}\n' "https://<HOST>/oauth/callback"
+curl -sS -o /dev/null -w 'websub   %{http_code}\n' "https://<HOST>/websub?channel=<채널ID>"
 # 502 / 404 가 아니면 경로는 살아 있다 (인자 없는 요청이라 400 이 정상일 수 있다)
 ```
 
@@ -149,7 +166,7 @@ curl -sS -o /dev/null -w 'websub %{http_code}\n'  "https://<HOST>/websub/youtube
 
 ```bash
 for i in $(seq 1 80); do
-  curl -sS -o /dev/null -w '%{http_code} ' "https://<HOST>/oauth/chzzk/callback"
+  curl -sS -o /dev/null -w '%{http_code} ' "https://<HOST>/oauth/callback"
 done; echo
 # 60건 근처부터 429 가 섞여야 한다.
 ```
