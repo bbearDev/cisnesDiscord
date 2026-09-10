@@ -1,5 +1,5 @@
 {
-  "_comment": "정상 웹훅 페이로드. liveHash 는 우리가 계산하지 않고 받은 값을 그대로 원장 eventKey 로 쓴다. 웹훅에는 confirmed 필드가 없다 — onScanAttached(openDate 확정 시점)에서만 발사되므로 암묵적으로 확정 상태다.",
+  "_comment": "정상 웹훅 페이로드. liveHash 는 우리가 계산하지 않고 받은 값을 그대로 원장 eventKey 로 쓴다. 이미지 두 칸은 값이 있을 때만 실린다(빈 문자열이 아니라 키 자체가 없다). 웹훅에는 confirmed 필드가 없다 — onScanAttached(openDate 확정 시점)에서만 발사되므로 암묵적으로 확정 상태다.",
   "event": "live.started",
   "version": 1,
   "channelId": "c3355ea2b3bea6c646789510796379d6",
@@ -11,5 +11,7 @@
   "liveTitle": "오늘은 잡담방송",
   "categoryValue": "TALK",
   "concurrentUserCount": 42,
+  "liveImageUrl": "https://video-phinf.pstatic.net/live/df09256e/thumbnail_720.jpg",
+  "channelImageUrl": "https://nng-phinf.pstatic.net/profile/c3355ea2/profile.jpg",
   "detectedAt": "2026-09-06T18:57:31.000Z"
 }

@@ -1,5 +1,5 @@
 {
-  "_comment": "대상 채널(시스네)이 방송 중이고 신원이 확정된 상태 — 3상태식 announce. liveHash 는 sha256('c3355ea2b3bea6c646789510796379d6 2026-09-07 03:56:39').slice(0,8) 로 실제 유도한 값이다(테스트가 재계산 대조한다). 폴링 경로에는 liveTitle 이 없다는 점에 유의 — 상류가 싣지 않는다.",
+  "_comment": "대상 채널(시스네)이 방송 중이고 신원이 확정된 상태 — 3상태식 announce. liveHash 는 sha256('c3355ea2b3bea6c646789510796379d6 2026-09-07 03:56:39').slice(0,8) 로 실제 유도한 값이다(테스트가 재계산 대조한다). 폴링 경로에는 liveTitle 이 없다는 점에 유의 — 상류가 싣지 않는다. 반면 이미지 두 칸은 웹훅과 같은 이름으로 폴링 응답에도 실린다.",
   "version": 1,
   "generatedAt": "2026-09-06T19:00:00.000Z",
   "channels": [
@@ -15,6 +15,8 @@
       "liveId": 88220011,
       "categoryValue": "TALK",
       "uptimeMs": 201000,
+      "liveImageUrl": "https://video-phinf.pstatic.net/live/df09256e/thumbnail_720.jpg",
+      "channelImageUrl": "https://nng-phinf.pstatic.net/profile/c3355ea2/profile.jpg",
       "sessionStartedAt": "2026-09-06T18:56:25.000Z",
       "status": "running",
       "socketState": "connected"

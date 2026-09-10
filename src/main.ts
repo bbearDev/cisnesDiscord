@@ -33,8 +33,7 @@ import type {
 import type { GateGateway } from './discord/gate.js';
 import { buildUploadPayload, uploadLabel } from './discord/upload-embed.js';
 import {
-  buildLiveEmbedSpec,
-  liveAnnounceLabel,
+  jobFromOutbox,
   type LiveAnnounceFn,
   type LiveAnnounceJob,
   type LiveDetectedVia,
@@ -806,6 +805,18 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       logger.error({ liveHash: job.liveHash }, '방송 공지 채널이 설정돼 있지 않습니다');
       return;
     }
+    // ★ 웹훅·폴링·기동복구가 **전부** 여기를 지난다. 그림 관측을 경로별 이벤트가 아니라
+    //   이 한 줄에 두는 이유다 — 폴링이 도는 상황은 웹훅이 죽었을 때이고, 그때 웹훅
+    //   로그만 보라고 안내하면 진단이 첫 단계에서 막힌다 (런북 §8-d).
+    logger.info(
+      {
+        liveHash: job.liveHash,
+        detectedVia: job.detectedVia,
+        image: job.imageSource,
+        ...(job.droppedImageFields === undefined ? {} : { imageDropped: job.droppedImageFields }),
+      },
+      '방송 공지 그림',
+    );
     const result = await announcer.announce({
       channelId,
       // ★ `LiveEmbedFields` → `EmbedSpec`. 두 타입이 갈리면 이 줄이 깨진다.
@@ -848,17 +859,17 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       // 세션 행이 남아 있으면 제목·시작 시각까지 그대로 되살린다.
       const session = liveSessions.get(row.eventKey);
       const via = toLiveVia(row.detectedVia);
-      await liveAnnounce({
-        liveHash: row.eventKey,
-        detectedVia: via,
-        embed: buildLiveEmbedSpec({
+      // ★ 작업 조립은 `live-announce.ts` 가 한다 — 여기서 손으로 적으면 `imageSource` 를
+      //   테스트가 지킬 수 없다 (다른 두 경로와 같은 자리에 둔다).
+      await liveAnnounce(
+        jobFromOutbox({
           channelId: file.live.channelId,
+          liveHash: row.eventKey,
+          detectedVia: via,
           ...(session?.liveTitle === undefined ? {} : { liveTitle: session.liveTitle }),
           ...(session?.openedAt === undefined ? {} : { openedAt: session.openedAt }),
-          detectedVia: via,
         }),
-        label: liveAnnounceLabel(row.eventKey),
-      });
+      );
       return;
     }
 

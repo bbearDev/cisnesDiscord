@@ -52,6 +52,23 @@ describe('parseLiveStartedEvent — 정상 페이로드', () => {
     expect('confirmed' in r.event).toBe(false);
   });
 
+  it('★ 이미지 두 칸은 **없어도 통과한다** — 값이 없으면 키 자체가 오지 않는다', () => {
+    const base = loadJsonFixture(OK) as Record<string, unknown>;
+    delete base['liveImageUrl'];
+    delete base['channelImageUrl'];
+    const r = parseLiveStartedEvent(base);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.event.liveImageUrl).toBeUndefined();
+    expect(r.event.channelImageUrl).toBeUndefined();
+  });
+
+  it('★★ 그림 주소가 이상해도 페이로드를 거절하지 않는다 — 거절하면 그 방송 공지가 통째로 사라진다', () => {
+    const base = loadJsonFixture(OK) as Record<string, unknown>;
+    const r = parseLiveStartedEvent({ ...base, liveImageUrl: '깨진 주소' });
+    expect(r.ok).toBe(true);
+  });
+
   it('상류가 필드를 더해도 거부하지 않는다 (줄어드는 것만 막는다)', () => {
     const base = loadJsonFixture(OK) as Record<string, unknown>;
     const r = parseLiveStartedEvent({ ...base, brandNewField: 'whatever' });

@@ -17,6 +17,7 @@ import {
   createChzzkbotWebhookRoute,
   CHZZKBOT_WEBHOOK_PATH,
   LIVE_WEBHOOK_OPS_KINDS,
+  type LiveWebhookEvent,
   type OpsEventRecorder,
 } from '../../src/web/routes/chzzkbot-webhook.js';
 import { loadJsonFixture, MIN_TOKEN_LENGTH } from '../e2e/harness/fake-chzzkbot.js';
@@ -42,6 +43,7 @@ let ledger: AnnouncementLedgerRepo;
 let clock: ManualClock;
 let route: Route;
 let announced: LiveAnnounceJob[];
+let events: LiveWebhookEvent[];
 let sessions: LiveSessionStore;
 let opsRows: () => { kind: string; detail: string | null }[];
 
@@ -73,6 +75,7 @@ function post(body: unknown, opts: { token?: string | null } = {}): Promise<Rout
 function build(): void {
   ledger = createAnnouncementLedgerRepo(db);
   announced = [];
+  events = [];
   sessions = {
     record: () => undefined,
     closeOpen: () => 0,
@@ -88,6 +91,9 @@ function build(): void {
     },
     ops: opsRecorder(db),
     clock,
+    onEvent: (e) => {
+      events.push(e);
+    },
   });
   const select = db.prepare<Record<string, never>, { kind: string; detail: string | null }>(
     'SELECT kind, detail FROM ops_events ORDER BY id',
@@ -239,6 +245,59 @@ describe('★★ 4·5단계 — 원장 선점이 2xx 보다 먼저다', () => {
     expect(announced).toHaveLength(1);
     expect(announced[0]).toMatchObject({ liveHash: 'df09256e', detectedVia: 'webhook' });
     expect(announced[0]!.embed.title).toBe('오늘은 잡담방송');
+  });
+
+  it('★ 방송 썸네일이 임베드까지 실려 가고, 어디서 왔는지가 수신 로그에 남는다', async () => {
+    await post(loadJsonFixture('chzzkbot/webhook-live-started.json'));
+    expect(announced[0]!.embed.image).toBe(
+      'https://video-phinf.pstatic.net/live/df09256e/thumbnail_720.jpg',
+    );
+    // ★ `none`(상류가 안 실었다) 과 `dropped`(우리가 버렸다) 를 가르는 칸이다.
+    expect(events.find((e) => e.type === 'claimed')?.image).toBe('live');
+  });
+
+  it('★ 상류가 그림을 안 실어도 공지는 그대로 나간다 — 로그에 none 이 남는다', async () => {
+    const base = loadJsonFixture('chzzkbot/webhook-live-started.json') as Record<string, unknown>;
+    delete base['liveImageUrl'];
+    delete base['channelImageUrl'];
+    const res = await post(base);
+    expect(res.status).toBeGreaterThanOrEqual(200);
+    expect(res.status).toBeLessThan(300);
+    expect(announced).toHaveLength(1);
+    expect(announced[0]!.embed.image).toBeUndefined();
+    const claimed = events.find((e) => e.type === 'claimed');
+    expect(claimed?.image).toBe('none');
+    // ★ 버린 것이 없다 = 상류가 안 보냈다. 이 조합이라야 우리 쪽을 안 뒤져도 된다.
+    expect(claimed?.imageDropped).toBeUndefined();
+  });
+
+  it('★★ 그림 주소가 깨져 있어도 공지는 나간다 — 그림만 빠지고 버린 칸이 로그에 남는다', async () => {
+    const base = loadJsonFixture('chzzkbot/webhook-live-started.json') as Record<string, unknown>;
+    const res = await post({ ...base, liveImageUrl: '깨진 주소', channelImageUrl: '깨진 주소' });
+    expect(res.status).toBeGreaterThanOrEqual(200);
+    expect(res.status).toBeLessThan(300);
+    expect(announced).toHaveLength(1);
+    expect(announced[0]!.embed.image).toBeUndefined();
+    const claimed = events.find((e) => e.type === 'claimed');
+    // ★ `none` 이지만 buried 가 아니다 — 버린 칸이 함께 남아 "상류가 안 보냄"과 갈린다.
+    expect(claimed?.image).toBe('none');
+    expect(claimed?.imageDropped).toEqual(['liveImageUrl', 'channelImageUrl']);
+  });
+
+  it('★★ 썸네일만 깨졌을 때 — 프로필이 받아 주지만 버린 칸은 반드시 남는다', async () => {
+    // 우리 검사가 실제로 발동하는 가장 흔한 모양이다. `image` 만 보면 정상과 구분되지 않아
+    // 아무도 안 보게 된다 — 이 케이스가 조용해지는 것이 관측 설계의 실패다.
+    const base = loadJsonFixture('chzzkbot/webhook-live-started.json') as Record<string, unknown>;
+    const res = await post({ ...base, liveImageUrl: '/relative/thumb.jpg' });
+    expect(res.status).toBeGreaterThanOrEqual(200);
+    expect(res.status).toBeLessThan(300);
+    // 공지도 그림도 멀쩡하다 — 그래서 더더욱 로그가 말해 줘야 한다.
+    expect(announced[0]!.embed.image).toBe(
+      'https://nng-phinf.pstatic.net/profile/c3355ea2/profile.jpg',
+    );
+    const claimed = events.find((e) => e.type === 'claimed');
+    expect(claimed?.image).toBe('channel');
+    expect(claimed?.imageDropped).toEqual(['liveImageUrl']);
   });
 
   it('★★ 2xx 를 돌려줄 때 원장 행이 **이미** 커밋돼 있다', async () => {

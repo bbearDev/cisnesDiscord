@@ -61,6 +61,27 @@ export const LiveStartedEventSchema = z.object({
   liveTitle: z.string().optional(),
   categoryValue: z.string().optional(),
   concurrentUserCount: z.number().optional(),
+  /**
+   * 이 방송의 썸네일.
+   *
+   * ★ **값이 없으면 키 자체가 없다** — 빈 문자열은 오지 않는다. 방송 시작 직후에는
+   *   치지직이 썸네일을 아직 안 주기도 하고, 상류는 방송을 인식할 때 **딱 한 번**만
+   *   훑는다. 그때 없었으면 그 방송은 **끝까지** 이 값이 없다 — 폴링으로 다시 물어도
+   *   같다. 그래서 "썸네일 생기면 임베드 고쳐 그리기" 는 만들지 않는다.
+   *
+   * ★★ `z.string().url()` 을 걸지 **않는다.** 주소가 이상하다고 웹훅을 400 으로
+   *   거절하면 그림 하나 때문에 **그 방송 공지가 통째로 사라진다** — 우리가 제일
+   *   무서워하는 침묵하는 누락을 스스로 만드는 짓이다. 주소 모양 검사는 임베드를
+   *   만드는 자리(`live/live-announce.ts`)에서 하고, 거기서 걸리면 **그림만** 빠진다.
+   */
+  liveImageUrl: z.string().min(1).optional(),
+  /**
+   * 관측 당시의 채널 프로필 이미지.
+   *
+   * ★ 썸네일이 없을 때 쓰라고 상류가 같이 실어 보내는 **대체 후보**다.
+   *   `liveImageUrl` 과 같은 이유로 여기서도 주소 모양을 검사하지 않는다.
+   */
+  channelImageUrl: z.string().min(1).optional(),
   /** chzzkbot 이 인식한 시각 (ISO-8601 UTC) */
   detectedAt: isoInstant,
 });

@@ -7,6 +7,8 @@ import { parseLiveStartedBody } from '../../chzzk/live-event-schema.js';
 import {
   jobFromWebhook,
   type LiveAnnounceFn,
+  type LiveImageField,
+  type LiveImageSource,
   type LiveLedger,
   type LiveSessionStore,
 } from '../../live/live-announce.js';
@@ -115,6 +117,13 @@ export interface LiveWebhookEvent {
   liveHash?: string;
   channelId?: string;
   reason?: string;
+  /** ★ `claimed` 에만 실린다 — 임베드에 **무엇을 실었나** */
+  image?: LiveImageSource;
+  /**
+   * ★★ `claimed` 에만, 그리고 **버린 것이 있을 때만** 실린다.
+   *   이 칸이 보이면 그것만으로 우리 쪽을 뒤질 이유다 — `image` 값과 무관하다.
+   */
+  imageDropped?: readonly LiveImageField[];
 }
 
 /**
@@ -279,11 +288,19 @@ export function createChzzkbotWebhookRoute(deps: ChzzkbotWebhookDeps): Route {
       // ── 6. 발송은 비동기 ────────────────────────────────────────
       // ★ await 하지 않는다. 여기서 기다리면 2xx 가 디스코드 왕복만큼 늦어지고,
       //   계약 timeoutMs(5초)를 넘기면 chzzkbot 이 실패로 보고 재전송한다.
-      void deps.announce(jobFromWebhook(event, receivedAtMs)).catch(() => {
+      const job = jobFromWebhook(event, receivedAtMs);
+      void deps.announce(job).catch(() => {
         /* 발송기는 던지지 않기로 돼 있다. 새더라도 2xx 를 되돌리지 않는다 */
       });
 
-      emit({ type: 'claimed', liveHash: event.liveHash });
+      // ★ 그림 관측은 **작업에서 읽는다.** 여기서 다시 계산하면 임베드에 실제로 들어간
+      //   것과 로그가 갈릴 수 있고, 그 순간 이 칸은 진단이 아니라 오해가 된다.
+      emit({
+        type: 'claimed',
+        liveHash: event.liveHash,
+        image: job.imageSource,
+        ...(job.droppedImageFields === undefined ? {} : { imageDropped: job.droppedImageFields }),
+      });
       // ── 5. 2xx ─────────────────────────────────────────────────
       return ack(json(202, { ok: true, liveHash: event.liveHash }));
     },
