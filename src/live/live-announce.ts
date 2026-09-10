@@ -420,7 +420,7 @@ export interface LiveSessionRecord {
 }
 
 /**
- * **이미 끝난 방송인가** — 아웃박스가 회수한 `live_start` 행을 보내도 되는지의 판정.
+ * **보내면 안 되는 `live_start` 재발송인가** — 아웃박스가 회수한 행의 판정.
  *
  * ★★ 라이브 공지는 **시점이 곧 내용이다.** *"방송이 시작되었습니다"* 는 지금 켜져
  *   있다는 뜻이고, 끝난 뒤에 나가면 늦은 공지가 아니라 **거짓 공지**가 된다.
@@ -430,13 +430,23 @@ export interface LiveSessionRecord {
  *   현재 사실이므로 생략하지 않는다"* 고 했다. 그 문장의 대우가 여기다 —
  *   현재 사실이 아니게 된 방송은 공지 대상이 아니다.
  *
- * ★ 세션 행이 없으면 **보낸다**(`false`). 세션은 공지의 전제가 아니고(기록 실패가
- *   공지를 막지 않는다), 모르는 것을 종료로 치면 멀쩡한 공지가 사라진다.
+ * ★★ **세션을 알면 그 판정이 우선이다.** 진행 중이면 아무리 늦게 회수돼도 보낸다 —
+ *   현재 사실이기 때문이다(§S7). 나이는 보지 않는다.
+ *
+ * ★★ **모를 때만 나이로 가른다** (`unknownIsStale`). 세션 기록은 공지의 전제가 아니라
+ *   실패해도 공지가 나가므로(§S5), 세션 없는 행이 생길 수 있다. 그때 무조건 보내면
+ *   **며칠 된 행이 "지금 시작되었습니다" 로 나간다** — 이 함수가 막으려던 바로 그것이다.
+ *   갓 감지된 행은 보내고(§3-a: 늦게 보내기 > 안 보내기) 오래된 행은 막는다.
+ *
+ * ★ 나이 계산을 인자로 받는 이유: 임계값의 주인은 `recovery/downtime.ts`(L6)인데
+ *   이 파일은 L4 라 그쪽을 import 할 수 없다. 판정은 한 곳에 두고 **계산만** 밖에서
+ *   받는다 — composition-root 가 둘을 잇는다.
  */
-export function isEndedLiveResend(
+export function shouldSuppressLiveResend(
   session: { status?: string | undefined; closedAt?: string | undefined } | undefined,
+  unknownIsStale: boolean,
 ): boolean {
-  if (session === undefined) return false;
+  if (session === undefined) return unknownIsStale;
   return session.status === 'ended' || session.closedAt !== undefined;
 }
 

@@ -33,8 +33,8 @@ import type {
 import type { GateGateway } from './discord/gate.js';
 import { buildUploadPayload, uploadLabel } from './discord/upload-embed.js';
 import {
-  isEndedLiveResend,
   jobFromOutbox,
+  shouldSuppressLiveResend,
   type LiveAnnounceFn,
   type LiveAnnounceJob,
   type LiveDetectedVia,
@@ -870,8 +870,18 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
        *
        * ★ 행을 지우지 않고 **종결**한다 — 지우면 폴백이 재선점해 중복이 난다.
        */
-      if (isEndedLiveResend(session)) {
-        const reason = '종결: 방송이 이미 끝나 시작 공지를 보내지 않음';
+      // ★ 세션을 알면 그 판정이 우선이고(진행 중이면 보낸다), 모를 때만 나이로 가른다.
+      //   업로드와 같은 임계값을 쓴다 — "얼마나 지난 알림까지 의미가 있는가" 는 같은 질문이다.
+      const staleByAge = isStaleUploadResend(
+        Date.parse(row.claimedAt),
+        clock.now(),
+        file.recovery.downtimeThresholdHours,
+      );
+      if (shouldSuppressLiveResend(session, staleByAge)) {
+        const reason =
+          session === undefined
+            ? `종결: 세션 기록이 없고 감지 후 ${String(file.recovery.downtimeThresholdHours)}시간을 넘김`
+            : '종결: 방송이 이미 끝나 시작 공지를 보내지 않음';
         ledger.markSuppressed('live_start', row.eventKey, reason, clock.date().toISOString());
         logger.info({ liveHash: row.eventKey, reason }, '공지 종결');
         return;

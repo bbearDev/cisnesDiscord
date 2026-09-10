@@ -390,6 +390,43 @@ describe('★★ 늦어서 내용이 틀려진 공지는 보내지 않고 종결
     expect(isSuppressed(app.ledger.get('live_start', 'LIVEHASH')!)).toBe(false);
   });
 
+  it('★★ 세션을 모르는 오래된 방송 행도 종결된다 — 모른다고 "지금 시작" 을 내보내지 않는다', async () => {
+    // 세션 기록은 공지의 전제가 아니라 실패해도 공지가 나간다(§S5). 그래서 세션 없는
+    // 행이 생길 수 있고, 그것이 며칠 뒤 회수되면 틀린 공지가 된다.
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('live_start','NOSESSION','webhook',?,0)`,
+        ).run(daysAgo(2));
+      },
+    });
+
+    await app.outbox.runOnce();
+    await flush();
+
+    expect(fake.sent.filter((m) => JSON.stringify(m).includes('NOSESSION'))).toHaveLength(0);
+    const row = app.ledger.get('live_start', 'NOSESSION');
+    expect(isSuppressed(row!)).toBe(true);
+    expect(row?.lastError).toContain('세션 기록이 없고');
+  });
+
+  it('★ 세션을 모르지만 갓 감지한 방송 행은 그대로 나간다 — 나이만으로 막지 않는다', async () => {
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('live_start','FRESHNOSESS','webhook',?,0)`,
+        ).run(fresh());
+      },
+    });
+
+    await app.outbox.runOnce();
+    await flush();
+    expect(fake.sent.length).toBeGreaterThan(0);
+    expect(isSuppressed(app.ledger.get('live_start', 'FRESHNOSESS')!)).toBe(false);
+  });
+
   it('★★ 이틀 지난 업로드 공지도 나가지 않고 종결된다', async () => {
     const { app, fake } = await boot(() => undefined, {
       seed: (db) => {

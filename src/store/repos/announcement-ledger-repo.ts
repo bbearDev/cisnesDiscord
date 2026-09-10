@@ -62,8 +62,10 @@ export interface LedgerRow extends PendingAnnouncement {
 /**
  * 보내지 않고 종결된 행인가.
  *
- * ★ 이 판정을 호출부마다 손으로 적으면(`announcedAt != null && messageId == null`)
- *   한 곳이라도 틀리는 날 억제된 건이 "발송됨" 으로 집계된다. 규칙을 한 군데 둔다.
+ * ★ 지금 `src` 에는 원장을 "발송됨" 으로 집계하는 곳이 없다. **첫 집계 소비자가 생길 때
+ *   이것을 쓴다** — 그때 호출부마다 `announcedAt != null && messageId == null` 을 손으로
+ *   적으면 한 곳이라도 틀리는 날 억제된 건이 발송으로 세어지고, 그 오차는 조용하다.
+ *   규칙을 먼저 한 군데 못 박아 둔다.
  */
 export function isSuppressed(row: LedgerRow): boolean {
   return row.announcedAt !== undefined && row.messageId === undefined;
