@@ -74,8 +74,46 @@ export const WEBSUB_SWEEP_SEC = 300;
  */
 export const RESUBSCRIBE_COOLDOWN_MS = 10 * 60_000;
 
-/** 구독 요청 1건의 작업 전체 예산 (§5.6.1). 회당 5초 × 재시도 여유 */
-export const WEBSUB_BUDGET_MS = 10_000;
+/**
+ * 구독 요청 1건의 작업 전체 예산 (§5.6.1). 회당 15초 × 재시도 여유.
+ *
+ * ★ 회당 타임아웃(`websub-subscribe`)보다 **반드시 커야 한다.** 작으면 예산이 먼저
+ *   끊어 회당 타임아웃을 올린 효과가 통째로 사라진다 — 값을 올릴 때 짝으로 본다.
+ *
+ * ★ 채널 2개면 스윕 한 바퀴 최악 60초로, 기본 주기 300초 안에 끝난다.
+ */
+export const WEBSUB_BUDGET_MS = 30_000;
+
+/**
+ * 구독 재시도 백오프 — **연속 실패마다 2배, 상한 1시간.**
+ *
+ * ★★ 왜 필요한가 (실측 2026-09-10). 구독이 확정되지 않으면 스윕이 매번 "갱신해야 함"
+ *   으로 읽어 **5분마다 영원히 재시도한다.** 하루 414건이 나갔고, 그 상대는 우리 IP 를
+ *   이미 간헐적으로 조이고 있는 구글이다(같은 날 RSS 피드도 간헐 차단됐다).
+ *   즉 재시도 자체가 **막힌 상태를 유지시키는 쪽**으로 일한다.
+ *
+ * ★ `RESUBSCRIBE_COOLDOWN_MS` 는 이 경우를 못 막는다 — 그 쿨다운은 `subscribed_at`
+ *   기준이고 그 값은 **202 를 받았을 때만** 갱신된다. 한 번도 못 받으면 쿨다운은
+ *   영원히 통과다. 실패 쪽 브레이크가 따로 있어야 한다.
+ *
+ * ★ 상한이 1시간인 이유: 리스 갱신은 리스의 50% 시점(유튜브 기준 보통 2일 이상)이라
+ *   1시간 지연이 갱신 기한을 위협하지 않는다. 그보다 길면 **막힘이 풀린 뒤 복귀가
+ *   느려지는 쪽**이 문제가 된다.
+ */
+export const WEBSUB_BACKOFF_FACTOR = 2;
+export const WEBSUB_BACKOFF_MAX_SEC = 3_600;
+
+/**
+ * 연속 실패 `streak` 회일 때 다음 시도까지 기다릴 밀리초.
+ *
+ * ★ `streak` 은 `stuck-watch` 가 세는 값을 그대로 쓴다 — 여기서 또 세면 같은 규칙이
+ *   두 곳에 생기고, 하필 지표(`websub_renew_fail_streak`)와 어긋나는 날이 온다.
+ */
+export function renewBackoffMs(streak: number, sweepSec: number): number {
+  if (streak <= 0) return 0;
+  const sec = Math.min(sweepSec * WEBSUB_BACKOFF_FACTOR ** streak, WEBSUB_BACKOFF_MAX_SEC);
+  return Math.floor(sec * 1_000);
+}
 
 /** 시크릿 길이(바이트). HMAC-SHA1 의 블록(64B)보다 짧게 잡아 내부 해싱을 피한다 */
 export const SECRET_BYTES = 32;
@@ -226,7 +264,16 @@ export interface WebSubClient {
 export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
   const { http, subs, channels, clock, stuck } = opts;
   const hubUrl = opts.hubUrl ?? YOUTUBE_HUB_URL;
-  const sweepMs = (opts.sweepSec ?? WEBSUB_SWEEP_SEC) * 1_000;
+  const sweepSec = opts.sweepSec ?? WEBSUB_SWEEP_SEC;
+  const sweepMs = sweepSec * 1_000;
+  /**
+   * 채널별 **다음 시도 가능 시각**(epoch ms). 실패했을 때만 들어가고 성공하면 지운다.
+   *
+   * ★ 스윕 주기 자체는 늦추지 않는다. 스윕에는 구독 갱신 말고 **리스 잔여 경보**
+   *   (AC-P7)도 달려 있어서, 주기를 늦추면 구독 실패가 경보까지 느리게 만든다.
+   *   막아야 하는 것은 허브를 두드리는 빈도뿐이므로 그 지점만 게이트한다.
+   */
+  const nextAttemptAtMs = new Map<string, number>();
   const newSecret = opts.secretFactory ?? ((): string => randomBytes(SECRET_BYTES).toString('hex'));
   const known = new Map(opts.configured.map((c) => [c.channelId, c.label]));
 
@@ -306,12 +353,21 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
     if (r.ok) {
       subs.clearRenewError(channelId);
       stuck.observe('websub-renew', channelId, false, now);
+      // ★ 즉시 푼다. 천천히 회복하면 막힘이 풀린 뒤에도 한참 느린 채로 남는다
+      //   (`rss-poller` 가 "한 채널이라도 성공하면 즉시 복귀" 로 둔 것과 같은 이유).
+      nextAttemptAtMs.delete(channelId);
       log('websub 구독 요청을 허브가 받았습니다', { channelId, status: r.status });
       return true;
     }
     subs.setRenewError(channelId, r.reason, clock.date().toISOString());
     await raise(stuck.observe('websub-renew', channelId, true, now), out);
-    log('websub 구독 요청 실패', { channelId, reason: r.reason });
+    const waitMs = renewBackoffMs(stuck.value('websub-renew', channelId, now), sweepSec);
+    if (waitMs > 0) nextAttemptAtMs.set(channelId, now + waitMs);
+    log('websub 구독 요청 실패', {
+      channelId,
+      reason: r.reason,
+      retryAfterSec: Math.round(waitMs / 1_000),
+    });
     return false;
   }
 
@@ -335,8 +391,11 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
         expiresAtMs - now <= row.leaseSeconds * 1_000 * (1 - LEASE_RENEW_AT_ELAPSED_RATIO);
       const cooledDown =
         subscribedAtMs === undefined || now - subscribedAtMs >= RESUBSCRIBE_COOLDOWN_MS;
+      // ★ 실패 백오프. `cooledDown`(성공 기준)과 다른 축이다 — 202 를 한 번도 못 받으면
+      //   `subscribed_at` 이 갱신되지 않아 쿨다운은 영원히 통과한다.
+      const backedOff = now < (nextAttemptAtMs.get(channelId) ?? 0);
 
-      if (dueForRenew && cooledDown) {
+      if (dueForRenew && cooledDown && !backedOff) {
         if (await attempt(channelId, out.alerts)) out.renewed += 1;
         else out.renewFailed += 1;
       }

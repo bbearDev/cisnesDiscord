@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  CALL_TIMEOUT_MS,
+} from '../../src/runtime/http-budget.js';
+import {
   LEASE_RENEW_AT_ELAPSED_RATIO,
+  WEBSUB_BACKOFF_MAX_SEC,
+  WEBSUB_BUDGET_MS,
+  WEBSUB_SWEEP_SEC,
+  renewBackoffMs,
   TOPIC_URL_BASE,
   YOUTUBE_HUB_URL,
   leaseRemainingRatio,
@@ -117,5 +124,39 @@ describe('주소 상수', () => {
 
   it('채널 id 를 인코딩한다', () => {
     expect(topicUrl('UC a&b')).toContain('channel_id=UC%20a%26b');
+  });
+});
+
+describe('★★ 구독 재시도 백오프 — 재시도가 막힘을 유지시키지 않게', () => {
+  it('연속 실패마다 2배로 벌어진다', () => {
+    expect(renewBackoffMs(1, 300)).toBe(600_000); // 10분
+    expect(renewBackoffMs(2, 300)).toBe(1_200_000); // 20분
+    expect(renewBackoffMs(3, 300)).toBe(2_400_000); // 40분
+  });
+
+  it(`상한 ${String(WEBSUB_BACKOFF_MAX_SEC)}초를 넘지 않는다 — 막힘이 풀린 뒤 복귀가 느려지면 안 된다`, () => {
+    for (const streak of [4, 10, 100]) {
+      expect(renewBackoffMs(streak, 300)).toBeLessThanOrEqual(WEBSUB_BACKOFF_MAX_SEC * 1_000);
+    }
+    expect(renewBackoffMs(100, 300)).toBe(WEBSUB_BACKOFF_MAX_SEC * 1_000);
+  });
+
+  it('★ 연속 실패가 0 이면 백오프가 없다 — 성공 즉시 기본 주기로 돌아온다', () => {
+    expect(renewBackoffMs(0, 300)).toBe(0);
+    expect(renewBackoffMs(-1, 300)).toBe(0);
+  });
+
+  it('★ 첫 실패의 대기는 스윕 주기보다 길다 — 아니면 게이트가 아무 일도 안 한다', () => {
+    expect(renewBackoffMs(1, WEBSUB_SWEEP_SEC)).toBeGreaterThan(WEBSUB_SWEEP_SEC * 1_000);
+  });
+});
+
+describe('★★ 회당 타임아웃과 작업 예산은 짝이다', () => {
+  it('예산이 회당 타임아웃보다 크다 — 작으면 예산이 먼저 끊어 상향이 무의미해진다', () => {
+    expect(WEBSUB_BUDGET_MS).toBeGreaterThan(CALL_TIMEOUT_MS['websub-subscribe']);
+  });
+
+  it('★ 스윕 한 바퀴(채널 2개 최악)가 스윕 주기 안에 끝난다', () => {
+    expect(WEBSUB_BUDGET_MS * 2).toBeLessThan(WEBSUB_SWEEP_SEC * 1_000);
   });
 });
