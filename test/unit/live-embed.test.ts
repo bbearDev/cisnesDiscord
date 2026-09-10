@@ -10,6 +10,7 @@ import {
   jobFromPoll,
   jobFromWebhook,
   droppedImageFields,
+  isEndedLiveResend,
   jobFromOutbox,
   liveAnnounceLabel,
   liveImageSource,
@@ -323,5 +324,25 @@ describe('★★ 아웃박스 재발송 — unavailable 은 none 이 아니다',
     expect('webhookReceivedAtMs' in job).toBe(false);
     // 임베드 타임스탬프에는 그대로 들어간다 — 사람이 읽는 값과 기계가 읽는 축은 다르다.
     expect(job.embed.timestamp).toBe('2026-09-06T18:56:39.000Z');
+  });
+});
+
+describe('★★ 이미 끝난 방송의 시작 공지는 보내지 않는다', () => {
+  it('status 가 ended 면 보내지 않는다', () => {
+    expect(isEndedLiveResend({ status: 'ended' })).toBe(true);
+  });
+
+  it('closed_at 이 채워져 있어도 보내지 않는다 — 두 표식 중 하나만 서도 끝난 방송이다', () => {
+    expect(isEndedLiveResend({ status: 'live', closedAt: '2026-09-08T22:02:22.214Z' })).toBe(true);
+  });
+
+  it('진행 중이면 보낸다 — §S7 "진행 중인 방송은 현재 사실이다"', () => {
+    expect(isEndedLiveResend({ status: 'live' })).toBe(false);
+  });
+
+  it('★★ 세션 행이 없으면 보낸다 — 모르는 것을 종료로 치면 멀쩡한 공지가 사라진다', () => {
+    // 세션 기록은 공지의 전제가 아니다(기록 실패가 공지를 막지 않는다, §S5).
+    expect(isEndedLiveResend(undefined)).toBe(false);
+    expect(isEndedLiveResend({})).toBe(false);
   });
 });

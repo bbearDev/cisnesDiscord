@@ -33,6 +33,7 @@ import type {
 import type { GateGateway } from './discord/gate.js';
 import { buildUploadPayload, uploadLabel } from './discord/upload-embed.js';
 import {
+  isEndedLiveResend,
   jobFromOutbox,
   type LiveAnnounceFn,
   type LiveAnnounceJob,
@@ -53,6 +54,7 @@ import {
   type WebhookSilenceWatch,
 } from './live/webhook-silence-watch.js';
 import {
+  isStaleUploadResend,
   measureDowntime,
   recoverLive,
   recoverYoutube,
@@ -858,6 +860,23 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     if (row.kind === 'live_start') {
       // 세션 행이 남아 있으면 제목·시작 시각까지 그대로 되살린다.
       const session = liveSessions.get(row.eventKey);
+
+      /**
+       * ★★ **이미 끝난 방송의 시작 공지는 보내지 않는다.**
+       *
+       *   라이브 공지는 시점이 곧 내용이다 — 끝난 뒤에 나가면 늦은 공지가 아니라
+       *   **거짓 공지**다. 디스코드가 몇 시간 죽어 있다 살아난 날, 이 문이 없으면
+       *   지나간 방송이 "지금 시작되었습니다" 로 튀어나온다.
+       *
+       * ★ 행을 지우지 않고 **종결**한다 — 지우면 폴백이 재선점해 중복이 난다.
+       */
+      if (isEndedLiveResend(session)) {
+        const reason = '종결: 방송이 이미 끝나 시작 공지를 보내지 않음';
+        ledger.markSuppressed('live_start', row.eventKey, reason, clock.date().toISOString());
+        logger.info({ liveHash: row.eventKey, reason }, '공지 종결');
+        return;
+      }
+
       const via = toLiveVia(row.detectedVia);
       // ★ 작업 조립은 `live-announce.ts` 가 한다 — 여기서 손으로 적으면 `imageSource` 를
       //   테스트가 지킬 수 없다 (다른 두 경로와 같은 자리에 둔다).
@@ -883,6 +902,21 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
      *   보증하는 값이라, 어느 한쪽이 바뀌어도 이 문은 닫혀 있다.
      */
     if (row.detectedVia === 'seed' || ledger.get('youtube_upload', row.eventKey)?.seeded === true) {
+      return;
+    }
+
+    /**
+     * ★★ **너무 늦은 업로드 공지도 보내지 않는다** (AC-30 과 같은 임계값).
+     *
+     *   기동 복구는 *"다운타임이 기준을 넘으면 밀린 유튜브 알림을 전량 생략"* 한다.
+     *   그런데 재기동 없이 디스코드만 오래 죽어 있으면 같은 상황인데도 그 규칙이
+     *   적용되지 않아, 회복한 순간 **이틀 지난 업로드 공지가 튀어나온다.**
+     *   "얼마나 지난 알림까지 의미가 있는가" 는 경로가 아니라 시간이 정한다.
+     */
+    if (isStaleUploadResend(Date.parse(row.claimedAt), clock.now(), file.recovery.downtimeThresholdHours)) {
+      const reason = `종결: 감지 후 ${String(file.recovery.downtimeThresholdHours)}시간을 넘겨 공지하지 않음`;
+      ledger.markSuppressed('youtube_upload', row.eventKey, reason, clock.date().toISOString());
+      logger.info({ videoId: row.eventKey, reason }, '공지 종결');
       return;
     }
 

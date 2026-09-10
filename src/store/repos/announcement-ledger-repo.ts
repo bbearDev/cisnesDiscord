@@ -52,9 +52,21 @@ export interface PendingAnnouncement {
 
 /** 진단·테스트용 원장 한 행 */
 export interface LedgerRow extends PendingAnnouncement {
+  /** 종결 시각. **발송했든 보내지 않기로 했든** 채워진다 (`markSuppressed` 주석 참조) */
   announcedAt?: string | undefined;
+  /** ★ 이 값의 유무가 "발송함" 과 "보내지 않고 종결함" 을 가른다 */
   messageId?: string | undefined;
   seeded: boolean;
+}
+
+/**
+ * 보내지 않고 종결된 행인가.
+ *
+ * ★ 이 판정을 호출부마다 손으로 적으면(`announcedAt != null && messageId == null`)
+ *   한 곳이라도 틀리는 날 억제된 건이 "발송됨" 으로 집계된다. 규칙을 한 군데 둔다.
+ */
+export function isSuppressed(row: LedgerRow): boolean {
+  return row.announcedAt !== undefined && row.messageId === undefined;
 }
 
 export interface ClaimOptions {
@@ -96,7 +108,20 @@ export interface AnnouncementLedgerRepo {
    */
   markFailed(kind: AnnouncementKind, eventKey: string, error: string, at: string): number;
 
-  /** 아웃박스가 회수할 미발송 행. 오래 기다린 것부터 준다 */
+  /**
+   * **보내지 않고 종결한다** — 늦어서 내용이 틀려진 공지를 닫는 유일한 수단.
+   *
+   * ★ 이미 종결된 행에는 아무 일도 하지 않는다(`announced_at IS NULL` 조건).
+   *   발송에 성공한 행을 나중에 억제로 덮어써 `message_id` 를 지우면, 보낸 메시지의
+   *   주소를 잃는다.
+   */
+  markSuppressed(kind: AnnouncementKind, eventKey: string, reason: string, at: string): void;
+
+  /**
+   * 아웃박스가 회수할 미발송 행. 오래 기다린 것부터 준다.
+   *
+   * ★ **시드 행은 나오지 않는다** — 발송 대상이 아니면 회수 창을 차지해서도 안 된다.
+   */
   pendingRetries(limit?: number): PendingAnnouncement[];
 
   /** 진단·테스트용 단건 조회 */
@@ -176,6 +201,31 @@ export function createAnnouncementLedgerRepo(
      WHERE kind = @kind AND event_key = @key
   `);
 
+  /**
+   * **보내지 않고 종결한다.**
+   *
+   * ★★ `announced_at` 은 채우고 `message_id` 는 **비워 둔다.** 이 조합이 *"보내지
+   *   않고 닫았다"* 의 표식이다 — `markSent` 는 둘을 **항상 같이** 채우므로 둘은
+   *   언제든 갈린다:
+   *
+   *   ```
+   *   message_id IS NOT NULL  → 발송했다
+   *   message_id IS NULL      → 보내지 않고 종결했다 (사유는 last_error)
+   *   ```
+   *
+   * ★ 그래서 `announced_at` 의 뜻은 *"공지한 시각"* 이 아니라 **"이 행이 종결된
+   *   시각"** 이다. 이름이 새 뜻을 다 담지 못하는 것은 알고 있다 — 정식 칸
+   *   (`suppressed_at`)은 마이그레이션 002 를 열 때 승격한다(런북 §8-a).
+   *   그때까지 이 조합이 정보 손실 없이 같은 일을 한다.
+   *
+   * ★ `attempts` 는 올리지 않는다. 시도한 적이 없다 — 보내지 않기로 **판단**한 것이다.
+   */
+  const suppressed = db.prepare<{ kind: string; key: string; reason: string; at: string }, never>(`
+    UPDATE announcement_ledger
+       SET announced_at = @at, message_id = NULL, last_error = @reason
+     WHERE kind = @kind AND event_key = @key AND announced_at IS NULL
+  `);
+
   // ★ RETURNING 으로 올라간 값을 한 번에 받는다. UPDATE 뒤에 다시 SELECT 하면
   //   그 사이에 다른 경로가 끼어들 수 있다 (그래서 db.ts 가 SQLite 3.35 를 요구한다).
   const failed = db.prepare<
@@ -195,11 +245,27 @@ export function createAnnouncementLedgerRepo(
   //   보내는 곳은 우리가 설정한 디스코드 채널 하나뿐이고 대기열은 방송·업로드
   //   단위라 하루 수 건이다. 상한을 걸면 디스코드가 오래 죽어 있던 방송이
   //   **영영 안 나간다**(§3-a 2위). 상한 없이 두면 최악이 "늦게 나간다"(1위)다.
+  // ★★★ **시드 행을 여기서 걸러야 한다** — 발송 지점에서만 거르면 회수 창이 굶는다.
+  //
+  //   시드 행은 설계상 **영원히** `announced_at IS NULL` 이고(선점만 하고 공지하지
+  //   않는 것이 시딩의 정의다) 기동 시딩이라 **가장 오래됐다.** 즉 `claimed_at ASC`
+  //   정렬의 영구 상위권이다. 개수(채널당 15건)가 `LIMIT` 을 넘는 순간 창이 통째로
+  //   시드로 채워지고, **진짜 미발송 행은 영영 회수되지 않는다.**
+  //   실제로 2026-09-08 방송 공지 1건과 업로드 1건이 이 상태로 이틀을 갇혔다.
+  //
+  // ★ 두 표식을 **둘 다** 본다 — `main.ts` 재발송 지점과 같은 조건이다.
+  //   한쪽만 걸면 반쪽짜리 시드 행이 창을 계속 차지한다. 그런 행이 존재할 수 있다는
+  //   것은 `invariant-guards.test.ts` 의 HALFA·HALFB 가 이미 못 박아 뒀다.
+  //
+  // ★ 부분 인덱스 `idx_ledger_pending`(WHERE announced_at IS NULL)은 그대로 탄다.
+  //   추가 조건은 인덱스가 좁힌 뒤에 걸린다.
   const selectPending = db.prepare<{ lim: number }, Row>(`
     SELECT kind, event_key, detected_via, claimed_at, announced_at, message_id,
            attempts, last_error, seeded
       FROM announcement_ledger
      WHERE announced_at IS NULL
+       AND seeded = 0
+       AND detected_via <> 'seed'
      ORDER BY claimed_at ASC, kind ASC, event_key ASC
      LIMIT @lim
   `);
@@ -244,6 +310,10 @@ export function createAnnouncementLedgerRepo(
 
     markSent(kind, eventKey, messageId, at): void {
       sent.run({ kind, key: eventKey, msg: messageId, at });
+    },
+
+    markSuppressed(kind, eventKey, reason, at): void {
+      suppressed.run({ kind, key: eventKey, reason, at });
     },
 
     markFailed(kind, eventKey, error, at): number {

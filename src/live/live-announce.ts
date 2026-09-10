@@ -420,6 +420,27 @@ export interface LiveSessionRecord {
 }
 
 /**
+ * **이미 끝난 방송인가** — 아웃박스가 회수한 `live_start` 행을 보내도 되는지의 판정.
+ *
+ * ★★ 라이브 공지는 **시점이 곧 내용이다.** *"방송이 시작되었습니다"* 는 지금 켜져
+ *   있다는 뜻이고, 끝난 뒤에 나가면 늦은 공지가 아니라 **거짓 공지**가 된다.
+ *   그래서 업로드와 규칙이 다르다 — 업로드는 늦어도 "이 영상이 올라왔다" 가 참이다.
+ *
+ * ★ 이것은 §S7 이 그은 선의 **나머지 절반**이다. 기동 복구는 *"진행 중인 방송은
+ *   현재 사실이므로 생략하지 않는다"* 고 했다. 그 문장의 대우가 여기다 —
+ *   현재 사실이 아니게 된 방송은 공지 대상이 아니다.
+ *
+ * ★ 세션 행이 없으면 **보낸다**(`false`). 세션은 공지의 전제가 아니고(기록 실패가
+ *   공지를 막지 않는다), 모르는 것을 종료로 치면 멀쩡한 공지가 사라진다.
+ */
+export function isEndedLiveResend(
+  session: { status?: string | undefined; closedAt?: string | undefined } | undefined,
+): boolean {
+  if (session === undefined) return false;
+  return session.status === 'ended' || session.closedAt !== undefined;
+}
+
+/**
  * `live_sessions` 포트.
  *
  * ★ 저장소 구현은 US-007 composition-root 가 꽂는다. 여기서 인터페이스로 두는
