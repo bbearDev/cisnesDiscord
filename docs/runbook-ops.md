@@ -106,6 +106,37 @@ theirs=$(grep -h '^CHZZK_CLIENT_ID=' ~/git/chzzkbot/.env | cut -d= -f2-)
 > 죽이고(`revoke` 는 "clientId 와 user 가 같은 모든 토큰"을 제거한다), **팔로워 검증이 전원 정지**한다.
 > 복구에는 스트리머의 브라우저 재인가가 필요하다. 자세한 연쇄는 `docs/s0-prerequisites.md` §6.3.
 
+### 2-1-a. ★ 이 배포의 구성 — 리버스 프록시는 **다른 호스트**에 있다
+
+```
+인터넷 ──https──▶ [프록시 호스트]  ──http──▶ cubeat:8081  (LAN)
+                                    ▲
+chzzkbot(cubeat) ──웹훅──▶ 127.0.0.1:8081 ─┘   ← 루프백, 프록시와 무관
+```
+
+| 항목 | 이 배포의 값 | 이유 |
+|---|---|---|
+| `web.bindAddress` | **`0.0.0.0`** | 프록시가 다른 호스트라 루프백만 들으면 닿지 못한다 |
+| `web.publicBaseUrl` | `https://bbear.cubeat.kr` | 프록시가 종단하는 공개 주소 |
+
+> ★★ `deploy/reverse-proxy.example.conf` 와 `config/config.example.yaml` 은 **프록시가
+> 같은 호스트에 있는 설치**를 상정해 `127.0.0.1` 을 쓴다. 이 배포는 그 경우가 아니다 —
+> 예시를 근거로 `bindAddress` 를 루프백으로 되돌리면 **공개 경로 둘(OAuth 콜백 · WebSub)이
+> 통째로 끊긴다.**
+
+**그래서 여기서 볼 것은 "루프백인가" 가 아니라 도달 범위다:**
+
+```bash
+# 프록시 호스트에서 — 닿아야 한다
+curl -sS -o /dev/null -w 'lan %{http_code}\n' -m 5 http://<cubeat LAN IP>:8081/healthz
+
+# 아무 데서나 공인 IP 로 — 닿으면 안 된다 (000/거부가 정상)
+curl -sS -o /dev/null -w 'wan %{http_code}\n' -m 5 http://<공인 IP>:8081/healthz
+```
+
+> ★ 8081 은 토큰 검증이 있지만(`x-chzzkbot-token`), 그것은 **인증이지 격리가 아니다.**
+> 공인 IP 로 열려 있으면 방화벽 쪽을 고친다 — 앱 설정으로 풀 문제가 아니다.
+
 ### 2-2. 프록시 경로 도달 확인
 
 ```bash
@@ -147,9 +178,7 @@ sqlite3 ~/git/chzzkbot/data/bot.db \
 systemctl --user status cisnesdiscord --no-pager
 curl -sS http://127.0.0.1:8081/healthz
 # ★ 앱 로그는 journald 가 아니라 파일이다 (§4-1 참조)
-grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1
-# ★ `address` 는 **127.0.0.1**, `port` 는 8081 이어야 한다. `0.0.0.0` 이면 8081 이 모든
-#   인터페이스에 열려 있다는 뜻이다 — 리버스 프록시를 우회해 직접 닿을 수 있다.
+grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1   # address · port
 npm run secrets:scan
 ```
 
