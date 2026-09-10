@@ -92,9 +92,15 @@ chmod 600 ~/.config/cisnesdiscord/watchdog.env
 ### 2-1. `clientId` 대조 ★★ (설정 불변식 — 배포마다 본다)
 
 ```bash
-journalctl --user -u cisnesdiscord -n 200 | grep -i 'clientId'
-grep '^CHZZK_CLIENT_ID=' ~/git/chzzkbot/.env
+# 값을 출력하지 않고 일치 여부만 본다 (둘 다 시크릿이다)
+ours=$(grep -h '^CHZZK_CLIENT_ID=' ~/git/cisnesDiscord/.env | cut -d= -f2-)
+theirs=$(grep -h '^CHZZK_CLIENT_ID=' ~/git/chzzkbot/.env | cut -d= -f2-)
+[ "$ours" = "$theirs" ] && echo '★★ 같음 — 배포 중단' || echo "다름 (정상) — ${ours:0:6}… / ${theirs:0:6}…"
 ```
+
+> ★ 예전에는 이 자리에 `journalctl … | grep -i clientId` 가 있었는데 **봇이 `clientId` 를
+> 로그에 찍지 않는다.** 늘 빈 결과가 나오고, 그걸 "다르다" 로 읽으면 이 불변식은
+> 검사되지 않은 채 통과한다. `.env` 두 개를 직접 대조한다.
 
 > **두 값이 같으면 즉시 멈춘다.** 같으면 시청자 인증 1건이 chzzkbot 의 스트리머 토큰을 함께
 > 죽이고(`revoke` 는 "clientId 와 user 가 같은 모든 토큰"을 제거한다), **팔로워 검증이 전원 정지**한다.
@@ -140,7 +146,10 @@ sqlite3 ~/git/chzzkbot/data/bot.db \
 ```bash
 systemctl --user status cisnesdiscord --no-pager
 curl -sS http://127.0.0.1:8081/healthz
-journalctl --user -u cisnesdiscord -n 100 | grep -i 'bind'   # 127.0.0.1:8081 이어야 한다
+# ★ 앱 로그는 journald 가 아니라 파일이다 (§4-1 참조)
+grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1
+# ★ `address` 는 **127.0.0.1**, `port` 는 8081 이어야 한다. `0.0.0.0` 이면 8081 이 모든
+#   인터페이스에 열려 있다는 뜻이다 — 리버스 프록시를 우회해 직접 닿을 수 있다.
 npm run secrets:scan
 ```
 
@@ -166,6 +175,17 @@ npm run secrets:scan
 ---
 
 ## 4. 장애 대응
+
+### 4-0. ★★ 로그가 어디 있는가 — 먼저 알아야 한다
+
+| 무엇 | 어디 |
+|---|---|
+| **앱 로그 전부** (공지·폴링·경고·오류) | `data/logs/cisnes.<날짜>.<n>.log` — JSON 한 줄씩 (`pino-roll`) |
+| 기동 실패 배너 · systemd 기동/종료 | `journalctl --user -u cisnesdiscord` |
+
+> ★ 봇은 `pino-roll` 트랜스포트로 **파일에만** 쓴다. `journalctl` 에서 앱 로그를 찾으면
+> 늘 빈 결과가 나오고, 그것을 "이상 없음" 으로 읽게 된다 — 이 문서의 조회 명령이
+> 파일과 journald 중 어느 쪽인지 매번 밝혀 두는 이유다.
 
 ### 4-1. 종료 코드로 먼저 가른다
 
@@ -296,7 +316,8 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 ```bash
 systemctl --user status cisnesdiscord cisnesdiscord-watchdog.timer --no-pager
 curl -sS http://127.0.0.1:8081/healthz
-journalctl --user -u cisnesdiscord --since '24 hours ago' -p warning
+# 경고 이상(pino level ≥ 40). ★ journalctl 이 아니라 로그 파일이다
+grep -h '"level":[456]0' data/logs/cisnes.$(date +%F).*.log | tail -20
 sqlite3 data/cisnes.db \
   "SELECT kind, detected_via, COUNT(*) FROM announcement_ledger
    WHERE claimed_at > datetime('now','-7 days') GROUP BY 1,2;"
@@ -424,15 +445,22 @@ chzzkbot 쪽 확인 결과(2026-09-07), 팔로워 동기화의 페이지 루프�
 "썸네일 생기면 다시 그리기" 는 만들지 않았고, 만들어서도 안 된다.
 
 공지를 낼 때마다 로그 한 줄이 남는다. **웹훅·폴링·기동복구 세 경로 모두** 이 줄을 남기므로
-감지 경로를 먼저 가릴 필요가 없다:
+감지 경로를 먼저 가릴 필요가 없다.
+
+> ★★ **앱 로그는 journald 에 없다.** `paths.logs`(기본 `data/logs`) 아래 파일로 나간다
+> (`pino-roll`, 날짜별 1파일). `journalctl` 에는 systemd 의 기동·종료 줄과 기동 실패
+> 배너만 남으므로, 아래 조회는 **파일을 봐야 한다.**
 
 ```bash
-journalctl --user -u cisnesdiscord -n 500 | grep '방송 공지 그림'
+grep '방송 공지 그림' ~/git/cisnesDiscord/data/logs/cisnes.*.log | tail
 ```
 
-```
-방송 공지 그림  liveHash=df09256e detectedVia=webhook image=live
-방송 공지 그림  liveHash=a1b2c3d4 detectedVia=api-poll image=channel imageDropped=["liveImageUrl"]
+JSON 한 줄로 남는다 (읽기 좋게 줄바꿈함):
+
+```json
+{"level":30,"liveHash":"df09256e","detectedVia":"webhook","image":"live","msg":"방송 공지 그림"}
+{"level":30,"liveHash":"a1b2c3d4","detectedVia":"api-poll","image":"channel",
+ "imageDropped":["liveImageUrl"],"msg":"방송 공지 그림"}
 ```
 
 **칸이 둘이고, 서로 다른 질문에 답한다.**
