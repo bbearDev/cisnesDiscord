@@ -10,6 +10,7 @@ import {
   ANNOUNCEMENT_KINDS,
   DETECTED_VIA,
   MAX_LAST_ERROR,
+  isSuppressed,
   type AnnouncementLedgerRepo,
 } from '../../src/store/repos/announcement-ledger-repo.js';
 
@@ -181,7 +182,66 @@ describe('pendingRetries — 아웃박스가 회수할 행', () => {
     expect(pending[0]?.lastError).toContain('503');
   });
 
+  it('★★ 시드 행은 창에 들어오지 않는다 — 두 표식 중 하나만 있어도 걸러진다', () => {
+    // 정상 시딩 행은 두 표식을 다 갖지만, 스키마는 반쪽짜리도 허용한다.
+    // 반쪽이 창을 차지하면 그만큼 진짜 건이 밀린다.
+    db.prepare(
+      `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+       VALUES('youtube_upload','BOTH','seed','2026-09-07T00:00:00.000Z',1),
+             ('youtube_upload','ONLYVIA','seed','2026-09-07T00:00:01.000Z',0),
+             ('youtube_upload','ONLYFLAG','websub','2026-09-07T00:00:02.000Z',1)`,
+    ).run();
+    repo.claim('youtube_upload', 'REAL', '2026-09-07T00:00:03.000Z', 'websub');
+
+    expect(repo.pendingRetries().map((r) => r.eventKey)).toEqual(['REAL']);
+  });
+
+  it('★ 종결된 행도 창에서 빠진다', () => {
+    repo.claim('live_start', 'closed', NOW, 'webhook');
+    repo.markSuppressed('live_start', 'closed', '종결: 방송이 이미 끝남', NOW);
+    expect(repo.pendingRetries()).toHaveLength(0);
+  });
+
   it('없는 행 조회는 undefined 다', () => {
     expect(repo.get('live_start', '없다')).toBeUndefined();
+  });
+});
+
+describe('★★ markSuppressed — 보내지 않고 종결한다', () => {
+  it('announced_at 은 채우고 message_id 는 비운다 — 이 조합이 "안 보냄" 의 표식이다', () => {
+    repo.claim('live_start', 'ended1', NOW, 'webhook');
+    repo.markSuppressed('live_start', 'ended1', '종결: 방송이 이미 끝남', NOW);
+
+    const row = repo.get('live_start', 'ended1');
+    expect(row?.announcedAt).toBe(NOW);
+    expect(row?.messageId).toBeUndefined();
+    expect(row?.lastError).toContain('방송이 이미 끝남');
+    expect(isSuppressed(row!)).toBe(true);
+  });
+
+  it('★ 발송한 행과 갈린다 — message_id 하나로 구분된다', () => {
+    repo.claim('live_start', 'sent1', NOW, 'webhook');
+    repo.markSent('live_start', 'sent1', 'msg-9', NOW);
+
+    const row = repo.get('live_start', 'sent1');
+    expect(row?.announcedAt).toBe(NOW);
+    expect(row?.messageId).toBe('msg-9');
+    expect(isSuppressed(row!)).toBe(false);
+  });
+
+  it('★★ 이미 발송된 행을 덮어쓰지 않는다 — 덮으면 보낸 메시지 주소를 잃는다', () => {
+    repo.claim('youtube_upload', 'done', NOW, 'websub');
+    repo.markSent('youtube_upload', 'done', 'msg-7', NOW);
+    repo.markSuppressed('youtube_upload', 'done', '늦었다', '2026-09-09T00:00:00.000Z');
+
+    const row = repo.get('youtube_upload', 'done');
+    expect(row?.messageId, '발송한 행이 억제로 덮였다').toBe('msg-7');
+    expect(row?.announcedAt).toBe(NOW);
+  });
+
+  it('★ attempts 를 올리지 않는다 — 시도한 적이 없다, 보내지 않기로 판단한 것이다', () => {
+    repo.claim('youtube_upload', 'old', NOW, 'rss');
+    repo.markSuppressed('youtube_upload', 'old', '늦었다', NOW);
+    expect(repo.get('youtube_upload', 'old')?.attempts).toBe(0);
   });
 });

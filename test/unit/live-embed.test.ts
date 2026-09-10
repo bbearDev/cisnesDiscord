@@ -14,6 +14,7 @@ import {
   liveAnnounceLabel,
   liveImageSource,
   pickLiveImage,
+  shouldSuppressLiveResend,
 } from '../../src/live/live-announce.js';
 import { judgeLiveState } from '../../src/live/live-state.js';
 import { loadJsonFixture } from '../e2e/harness/fake-chzzkbot.js';
@@ -323,5 +324,37 @@ describe('★★ 아웃박스 재발송 — unavailable 은 none 이 아니다',
     expect('webhookReceivedAtMs' in job).toBe(false);
     // 임베드 타임스탬프에는 그대로 들어간다 — 사람이 읽는 값과 기계가 읽는 축은 다르다.
     expect(job.embed.timestamp).toBe('2026-09-06T18:56:39.000Z');
+  });
+});
+
+describe('★★ 이미 끝난 방송의 시작 공지는 보내지 않는다', () => {
+  // 두 번째 인자는 "세션을 모를 때 나이로 보면 낡았는가" 다. 세션을 알면 무시된다.
+  const FRESH = false;
+  const OLD = true;
+
+  it('status 가 ended 면 보내지 않는다', () => {
+    expect(shouldSuppressLiveResend({ status: 'ended' }, FRESH)).toBe(true);
+  });
+
+  it('closed_at 이 채워져 있어도 보내지 않는다 — 두 표식 중 하나만 서도 끝난 방송이다', () => {
+    expect(
+      shouldSuppressLiveResend({ status: 'live', closedAt: '2026-09-08T22:02:22.214Z' }, FRESH),
+    ).toBe(true);
+  });
+
+  it('★★ 진행 중이면 아무리 늦어도 보낸다 — §S7 "진행 중인 방송은 현재 사실이다"', () => {
+    // 나이가 낡았어도 세션 판정이 우선이다. 이것이 §S7 과 충돌하지 않는 이유다.
+    expect(shouldSuppressLiveResend({ status: 'live' }, OLD)).toBe(false);
+  });
+
+  it('★ 세션을 모르고 갓 감지한 행이면 보낸다 — §3-a 늦게 보내기 > 안 보내기', () => {
+    expect(shouldSuppressLiveResend(undefined, FRESH)).toBe(false);
+    expect(shouldSuppressLiveResend({}, FRESH)).toBe(false);
+  });
+
+  it('★★ 세션을 모르는데 오래된 행이면 보내지 않는다 — "지금 시작" 이 며칠 뒤에 나간다', () => {
+    // 세션 기록은 공지의 전제가 아니라 실패해도 공지가 나간다(§S5) — 그래서 세션 없는
+    // 행이 실제로 생길 수 있다. 무조건 보내면 이 규칙이 막으려던 것을 스스로 낸다.
+    expect(shouldSuppressLiveResend(undefined, OLD)).toBe(true);
   });
 });
