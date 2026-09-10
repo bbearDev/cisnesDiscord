@@ -8,6 +8,7 @@ import { createHttpBudget } from '../../src/runtime/http-budget.js';
 import { createFollowerChecker } from '../../src/chzzk/follower-check.js';
 import { systemClock } from '../../src/runtime/clock.js';
 import { measureDowntime, recoverYoutube } from '../../src/recovery/downtime.js';
+import { isSuppressed } from '../../src/store/repos/announcement-ledger-repo.js';
 import { boot, flush } from '../helpers/app-harness.js';
 import { SYSTEMD_TIMEOUT_STOP_SEC } from '../../src/config/schema.js';
 import { BIND_ERROR_EXIT_CODE } from '../../src/web/server.js';
@@ -78,9 +79,18 @@ describe('★ AC-26 — 시딩 행 가드가 기대는 두 신호가 실제로 �
     }
   });
 
-  it('★ 그리고 그 행들은 실제로 아웃박스 회수 대상에 들어간다 — 가드가 없으면 나간다', async () => {
-    // ★ 이 단언이 이 파일의 요점이다. "가드가 막는다" 가 아니라
-    //   **"막지 않으면 나간다"** 를 고정한다. 이것이 참이어야 가드가 의미를 갖는다.
+  it('★★ 시드 행은 아웃박스 회수 창에 **들어오지 않는다** — 들어오면 진짜 건이 굶는다', async () => {
+    /**
+     * ★★ 예전에는 이 자리가 *"들어간다"* 를 고정했다. 발송 지점 가드가 막아 주니
+     *   회수 대상에 들어와도 된다고 봤던 것인데, **그것이 사고를 냈다.**
+     *
+     *   시드 행은 영원히 `announced_at IS NULL` 이고 기동 시딩이라 가장 오래됐다.
+     *   `claimed_at ASC LIMIT 20` 정렬의 영구 상위권이라, 개수가 창을 넘는 순간
+     *   창이 통째로 시드로 채워진다. 2026-09-08 방송 공지 1건과 업로드 1건이
+     *   그렇게 이틀을 갇혔다 — 원장에 행이 남아 있는데 아무도 집어가지 않았다.
+     *
+     * ★ 발송 지점 가드는 **그대로 둔다.** 여기가 벨트고 그쪽이 멜빵이다.
+     */
     const ledger = ledgerOf();
     await recoverYoutube({
       window: measureDowntime(undefined, Date.parse(AT)),
@@ -94,11 +104,19 @@ describe('★ AC-26 — 시딩 행 가드가 기대는 두 신호가 실제로 �
       at: AT,
     });
 
-    // 15건 전부 `announced_at IS NULL` 이라 대기열에 들어온다.
-    const pending = ledger.pendingRetries(100);
-    expect(pending).toHaveLength(15);
-    // → 조립부가 이 15건을 거르지 않으면 **최초 기동이 과거 영상 도배가 된다** (AC-26 위반).
-    expect(pending.every((r) => r.detectedVia === 'seed')).toBe(true);
+    // 15건 전부 `announced_at IS NULL` 이지만 **회수 창에는 하나도 안 들어온다.**
+    expect(ledger.pendingRetries(100)).toHaveLength(0);
+
+    // ★ 그런데 행 자체는 미발송으로 남아 있다 — 지운 것이 아니다.
+    //   (지우면 폴백이 재선점해 과거 영상을 다시 공지한다)
+    for (let i = 0; i < 15; i++) {
+      const id = `SEED${String(i).padStart(2, '0')}`;
+      expect(ledger.get('youtube_upload', id)?.announcedAt).toBeUndefined();
+    }
+
+    // ★ 반공허: 시드 표식이 없는 행은 같은 창에 그대로 들어온다.
+    ledger.claim('youtube_upload', 'REALONE', AT, 'websub');
+    expect(ledger.pendingRetries(100).map((r) => r.eventKey)).toEqual(['REALONE']);
   });
 
   it('정상 발송 대기 행은 시딩 신호를 갖지 않는다 — 가드가 정상 건을 막지 않는다', () => {
@@ -176,7 +194,12 @@ describe("★ 시딩 가드의 '이중 방어' 가 실제로 이중인지 — �
    *   문을 닫아야 한다. 그런 행을 일부러 만들어 확인한다. 이 행들은 정상 경로가
    *   만들지 않지만, 스키마가 허용하므로 **마이그레이션이나 상류 변경으로 생길 수 있다.**
    */
-  const AT2 = '2026-09-06T19:00:00.000Z';
+  /**
+   * ★★ **방금 감지한 것처럼** 둔다. 낡은 시각을 쓰면 신선도 억제(§AC-30 과 같은 임계)가
+   *   먼저 걸려 *"발송 0건"* 이 시딩 가드가 아니라 **다른 이유로** 참이 된다 —
+   *   그러면 이 파일 전체가 반공허해진다.
+   */
+  const AT2 = new Date().toISOString();
 
   it("detected_via='seed' 인데 seeded=0 인 행도 발송되지 않는다 (앞쪽 절반)", async () => {
     const { app, fake } = await boot(() => undefined, {
@@ -188,8 +211,10 @@ describe("★ 시딩 가드의 '이중 방어' 가 실제로 이중인지 — �
       },
     });
 
-    // ★ 반공허 가드: 그 행이 실제로 회수 대상에 들어와 있어야 이 테스트가 의미를 갖는다.
-    expect(app.ledger.pendingRetries(100).some((r) => r.eventKey === 'HALFA')).toBe(true);
+    // ★ 반공허 가드: 그 행이 **미발송으로 존재**해야 이 테스트가 의미를 갖는다.
+    //   `pendingRetries` 로 보지 않는다 — 회수 창은 이제 시드 표식을 SQL 에서 거르므로
+    //   창의 크기·정렬이라는 무관한 변수에 이 단언이 묶인다.
+    expect(app.ledger.get('youtube_upload', 'HALFA')?.announcedAt).toBeUndefined();
 
     await app.outbox.runOnce();
     await flush();
@@ -206,7 +231,7 @@ describe("★ 시딩 가드의 '이중 방어' 가 실제로 이중인지 — �
       },
     });
 
-    expect(app.ledger.pendingRetries(100).some((r) => r.eventKey === 'HALFB')).toBe(true);
+    expect(app.ledger.get('youtube_upload', 'HALFB')?.announcedAt).toBeUndefined();
 
     await app.outbox.runOnce();
     await flush();
@@ -301,5 +326,123 @@ describe('★ 빌드 산출물 — 마이그레이션 .sql 이 dist 까지 따�
     const files = readdirSync('src/store/migrations').filter((f) => f.endsWith('.sql'));
     expect(files.length).toBeGreaterThan(0);
     expect(files).toContain('001_init.sql');
+  });
+});
+
+describe('★★ 늦어서 내용이 틀려진 공지는 보내지 않고 종결한다', () => {
+  /**
+   * ★★ 이 블록이 지키는 문장: **원장에 행이 남아 있다고 언제까지나 보내도 되는 것은 아니다.**
+   *
+   *   §3-a 는 *"늦게 보내기(1위) > 안 보내기(2위)"* 라고 했지만, 그것은 **내용이 여전히
+   *   참일 때** 성립한다. 이미 끝난 방송의 "지금 시작되었습니다" 는 늦은 공지가 아니라
+   *   **틀린 공지**(3위)다. 그래서 라이브만 규칙이 다르다.
+   */
+  const fresh = (): string => new Date().toISOString();
+  const daysAgo = (n: number): string => new Date(Date.now() - n * 24 * 3600 * 1_000).toISOString();
+
+  it('★★ 이미 끝난 방송의 시작 공지는 나가지 않고 종결된다', async () => {
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('live_start','ENDEDHASH','webhook',?,0)`,
+        ).run(fresh());
+        db.prepare(
+          `INSERT INTO live_sessions(live_hash, open_date, opened_at, live_title, status,
+                                     first_seen_at, closed_at)
+           VALUES('ENDEDHASH','2026-09-08 22:00:13','2026-09-08T13:00:13.000Z',
+                  '[82일] 누워서 침 뱉어본사람?','ended',?,?)`,
+        ).run(daysAgo(2), daysAgo(2));
+      },
+    });
+
+    // ★ 반공허는 아래 `isSuppressed` 가 맡는다 — 굶어서 안 나간 것이라면 그 값이
+    //   false 다(행이 손대지 않은 채 남는다). 기동 자체가 아웃박스를 한 바퀴 돌리므로
+    //   여기서 `pendingRetries` 를 미리 보면 이미 종결된 뒤라 항상 비어 있다.
+    await app.outbox.runOnce();
+    await flush();
+
+    expect(fake.sent.filter((m) => JSON.stringify(m).includes('ENDEDHASH'))).toHaveLength(0);
+    const row = app.ledger.get('live_start', 'ENDEDHASH');
+    expect(isSuppressed(row!), '보내지도 종결하지도 않았다').toBe(true);
+    expect(row?.lastError).toContain('방송이 이미 끝나');
+    // ★ 종결됐으니 다음 틱에 다시 집히지 않는다 — 이것이 창을 비운다.
+    expect(app.ledger.pendingRetries(100).some((r) => r.eventKey === 'ENDEDHASH')).toBe(false);
+  });
+
+  it('★ 진행 중인 방송은 그대로 나간다 — 규칙이 정상 건을 막지 않는다', async () => {
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('live_start','LIVEHASH','webhook',?,0)`,
+        ).run(fresh());
+        db.prepare(
+          `INSERT INTO live_sessions(live_hash, open_date, opened_at, status, first_seen_at)
+           VALUES('LIVEHASH','2026-09-10 22:00:13','2026-09-10T13:00:13.000Z','live',?)`,
+        ).run(fresh());
+      },
+    });
+
+    await app.outbox.runOnce();
+    await flush();
+    expect(fake.sent.length).toBeGreaterThan(0);
+    expect(isSuppressed(app.ledger.get('live_start', 'LIVEHASH')!)).toBe(false);
+  });
+
+  it('★★ 세션을 모르는 오래된 방송 행도 종결된다 — 모른다고 "지금 시작" 을 내보내지 않는다', async () => {
+    // 세션 기록은 공지의 전제가 아니라 실패해도 공지가 나간다(§S5). 그래서 세션 없는
+    // 행이 생길 수 있고, 그것이 며칠 뒤 회수되면 틀린 공지가 된다.
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('live_start','NOSESSION','webhook',?,0)`,
+        ).run(daysAgo(2));
+      },
+    });
+
+    await app.outbox.runOnce();
+    await flush();
+
+    expect(fake.sent.filter((m) => JSON.stringify(m).includes('NOSESSION'))).toHaveLength(0);
+    const row = app.ledger.get('live_start', 'NOSESSION');
+    expect(isSuppressed(row!)).toBe(true);
+    expect(row?.lastError).toContain('세션 기록이 없고');
+  });
+
+  it('★ 세션을 모르지만 갓 감지한 방송 행은 그대로 나간다 — 나이만으로 막지 않는다', async () => {
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('live_start','FRESHNOSESS','webhook',?,0)`,
+        ).run(fresh());
+      },
+    });
+
+    await app.outbox.runOnce();
+    await flush();
+    expect(fake.sent.length).toBeGreaterThan(0);
+    expect(isSuppressed(app.ledger.get('live_start', 'FRESHNOSESS')!)).toBe(false);
+  });
+
+  it('★★ 이틀 지난 업로드 공지도 나가지 않고 종결된다', async () => {
+    const { app, fake } = await boot(() => undefined, {
+      seed: (db) => {
+        db.prepare(
+          `INSERT INTO announcement_ledger(kind, event_key, detected_via, claimed_at, seeded)
+           VALUES('youtube_upload','STALEVID','rss',?,0)`,
+        ).run(daysAgo(2));
+      },
+    });
+
+    await app.outbox.runOnce();
+    await flush();
+
+    expect(fake.sent.filter((m) => JSON.stringify(m).includes('STALEVID'))).toHaveLength(0);
+    const row = app.ledger.get('youtube_upload', 'STALEVID');
+    expect(isSuppressed(row!)).toBe(true);
+    expect(row?.lastError).toContain('시간을 넘겨');
   });
 });

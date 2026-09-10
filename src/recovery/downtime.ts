@@ -68,6 +68,32 @@ export function measureDowntime(
   return { lastSeenAt, now, durationMs, exceeded: durationMs > thresholdMs, firstBoot: false };
 }
 
+/**
+ * 아웃박스가 회수한 **업로드** 행이 보내기엔 너무 늦었는가.
+ *
+ * ★★ 이 판정이 AC-30 과 **같은 규칙의 나머지 절반**이다. 기동 복구는 *"다운타임이
+ *   기준을 넘으면 밀린 유튜브 알림을 전량 생략"* 한다. 그런데 재기동 없이 디스코드만
+ *   오래 죽어 있으면 같은 상황인데도 그 규칙이 적용되지 않아, 복구가 살아난 순간
+ *   **이틀 지난 업로드 공지가 튀어나온다.** 같은 임계값을 쓰는 이유가 이것이다 —
+ *   "얼마나 지난 알림까지 의미가 있는가" 는 경로가 아니라 시간이 정한다.
+ *
+ * ★ 경계는 `measureDowntime` 과 같다: 정확히 기준이면 **보내는 쪽**이다.
+ *
+ * ★ 기준은 `claimed_at`(처음 감지한 시각)이다. 마지막 시도 시각이 아니다 —
+ *   재시도를 오래 한 것과 **알림이 오래된 것**은 다른 질문이고, 시청자에게 의미가
+ *   있는 쪽은 뒤다.
+ */
+export function isStaleUploadResend(
+  claimedAtMs: number | undefined,
+  now: number,
+  thresholdHours = DEFAULT_DOWNTIME_THRESHOLD_HOURS,
+): boolean {
+  // ★ 시각을 못 읽으면 **보낸다.** 늦은 공지(§3-a 1위)가 누락(2위)보다 낫고,
+  //   파싱 실패를 억제 사유로 쓰면 멀쩡한 공지가 조용히 사라진다.
+  if (claimedAtMs === undefined || Number.isNaN(claimedAtMs)) return false;
+  return Math.max(0, now - claimedAtMs) > thresholdHours * 60 * 60 * 1_000;
+}
+
 /** 사람이 읽는 기간 문구 — 운영 채널 기록에 싣는다 (AC-30) */
 export function formatDuration(ms: number): string {
   const totalMin = Math.floor(ms / 60_000);
