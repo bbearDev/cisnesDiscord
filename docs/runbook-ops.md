@@ -14,9 +14,10 @@
 ```
                     공개 HTTPS (프록시가 종단)
                     ┌─────────────────────────────┐
-  치지직 OAuth ─────▶│ /oauth/chzzk/<콜백>          │
-  유튜브 WebSub 허브 ▶│ /websub/youtube/:chId       │──▶ 127.0.0.1:8081
-                    └─────────────────────────────┘         cisnesDiscord
+  시청자(브라우저) ──▶│ /oauth/start                │
+  치지직 OAuth ─────▶│ /oauth/callback             │──▶ cubeat:8081
+  유튜브 WebSub 허브 ▶│ /websub?channel=<채널ID>     │         cisnesDiscord
+                    └─────────────────────────────┘
                                                                  │  ▲
                             루프백 (프록시 불필요)                  │  │
    chzzkbot ──웹훅 POST──▶ 127.0.0.1:8081/hooks/chzzkbot/live ────┘  │
@@ -92,19 +93,90 @@ chmod 600 ~/.config/cisnesdiscord/watchdog.env
 ### 2-1. `clientId` 대조 ★★ (설정 불변식 — 배포마다 본다)
 
 ```bash
-journalctl --user -u cisnesdiscord -n 200 | grep -i 'clientId'
-grep '^CHZZK_CLIENT_ID=' ~/git/chzzkbot/.env
+# 값을 출력하지 않고 일치 여부만 본다 (둘 다 시크릿이다)
+# tr 인자 "\"'" 는 큰따옴표와 작은따옴표 두 글자다 — 값에 붙은 따옴표를 벗긴다
+read_id() { grep -h '^CHZZK_CLIENT_ID=' "$1" | cut -d= -f2- | tr -d "\"'"; }
+ours=$(read_id ~/git/cisnesDiscord/.env)
+theirs=$(read_id ~/git/chzzkbot/.env)
+
+if [ -z "$ours" ] || [ -z "$theirs" ]; then
+  echo "읽지 못했다 — 경로·권한을 확인하라 (대조하지 못했다)"
+elif [ "$ours" = "$theirs" ]; then
+  echo '★★ 같음 — 배포 중단'
+else
+  echo "다름 (정상) — ${ours:0:6}… / ${theirs:0:6}…"
+fi
 ```
+
+> ★ **빈 값을 "같음" 으로 세지 않는다.** 파일을 못 읽으면 양쪽이 빈 문자열이 되어
+> `"" = ""` 로 *"★★ 같음 — 배포 중단"* 이 뜬다. 멈추는 방향이라 안전하긴 하지만
+> **문구가 틀려서** 있지도 않은 `clientId` 충돌을 찾아 나서게 되고, 진짜 원인
+> (경로 오타·권한)은 화면에 안 나온다.
+>
+> ★★ **따옴표를 벗긴다.** `CHZZK_CLIENT_ID="abc"` 처럼 한쪽만 따옴표가 붙어 있으면
+> **같은 값인데 "다름(정상)"** 이 나온다. 이쪽은 위험한 방향이다 — 배포를 멈춰야 할
+> 상황을 통과시킨다.
+
+> ★ 예전에는 이 자리에 `journalctl … | grep -i clientId` 가 있었는데 **봇이 `clientId` 를
+> 로그에 찍지 않는다.** 늘 빈 결과가 나오고, 그걸 "다르다" 로 읽으면 이 불변식은
+> 검사되지 않은 채 통과한다. `.env` 두 개를 직접 대조한다.
 
 > **두 값이 같으면 즉시 멈춘다.** 같으면 시청자 인증 1건이 chzzkbot 의 스트리머 토큰을 함께
 > 죽이고(`revoke` 는 "clientId 와 user 가 같은 모든 토큰"을 제거한다), **팔로워 검증이 전원 정지**한다.
 > 복구에는 스트리머의 브라우저 재인가가 필요하다. 자세한 연쇄는 `docs/s0-prerequisites.md` §6.3.
 
-### 2-2. 프록시 경로 도달 확인
+### 2-1-a. ★ 이 배포의 구성 — 리버스 프록시는 **다른 호스트**에 있다
+
+```
+인터넷 ──https──▶ [프록시 호스트]  ──http──▶ cubeat:8081  (LAN)
+                                    ▲
+chzzkbot(cubeat) ──웹훅──▶ 127.0.0.1:8081 ─┘   ← 루프백, 프록시와 무관
+```
+
+| 항목 | 이 배포의 값 | 이유 |
+|---|---|---|
+| `web.bindAddress` | **`0.0.0.0`** | 프록시가 다른 호스트라 루프백만 들으면 닿지 못한다 |
+| `web.publicBaseUrl` | `https://bbear.cubeat.kr` | 프록시가 종단하는 공개 주소 |
+
+> ★★ `deploy/reverse-proxy.example.conf` 와 `config/config.example.yaml` 은 **프록시가
+> 같은 호스트에 있는 설치**를 상정해 `127.0.0.1` 을 쓴다. 이 배포는 그 경우가 아니다 —
+> 예시를 근거로 `bindAddress` 를 루프백으로 되돌리면 **공개 경로 둘(OAuth 콜백 · WebSub)이
+> 통째로 끊긴다.**
+
+**그래서 여기서 볼 것은 "루프백인가" 가 아니라 도달 범위다:**
 
 ```bash
-curl -sS -o /dev/null -w 'oauth  %{http_code}\n'  "https://<HOST>/oauth/chzzk/callback"
-curl -sS -o /dev/null -w 'websub %{http_code}\n'  "https://<HOST>/websub/youtube/<채널ID>"
+# 프록시 호스트에서 — 닿아야 한다
+curl -sS -o /dev/null -w 'lan %{http_code}\n' -m 5 http://<cubeat LAN IP>:8081/healthz
+
+# 아무 데서나 공인 IP 로 — 닿으면 안 된다 (000/거부가 정상)
+curl -sS -o /dev/null -w 'wan %{http_code}\n' -m 5 http://<공인 IP>:8081/healthz
+```
+
+> ★ 8081 은 토큰 검증이 있지만(`x-chzzkbot-token`), 그것은 **인증이지 격리가 아니다.**
+> 공인 IP 로 열려 있으면 방화벽 쪽을 고친다 — 앱 설정으로 풀 문제가 아니다.
+
+### 2-2. 프록시 경로 도달 확인
+
+**★★ 공개 경로는 이 셋이다. 코드가 정하며, 프록시는 그대로 넘기기만 한다.**
+
+| 공개 경로 | 앱 경로 | 누가 부르나 |
+|---|---|---|
+| `/oauth/start` | 같음 | 시청자 브라우저 |
+| `/oauth/callback` | 같음 | 치지직 OAuth |
+| `/websub` (질의문자열 `?channel=<채널ID>`) | 같음 | 유튜브 WebSub 허브 |
+
+> ★★ **경로를 다시 쓰거나(rewrite) 접두어를 떼면 안 된다.** WebSub 콜백 주소는 봇이
+> `publicBaseUrl + /websub` 로 **직접 만들어 허브에 등록한다**(`main.ts` 의 `callbackUrl`).
+> 프록시에서 다른 모양을 기대하면 허브가 등록된 그 주소로 왔을 때 안 맞고, 증상은
+> **구독이 영영 확정되지 않는 것**이다 — `websub_subscriptions.lease_seconds` 가 빈 채로
+> 남는다. 조용하고, 업로드 공지는 RSS 폴백으로 굴러가서 더 늦게 발견된다.
+
+
+```bash
+curl -sS -o /dev/null -w 'start    %{http_code}\n' "https://<HOST>/oauth/start"
+curl -sS -o /dev/null -w 'callback %{http_code}\n' "https://<HOST>/oauth/callback"
+curl -sS -o /dev/null -w 'websub   %{http_code}\n' "https://<HOST>/websub?channel=<채널ID>"
 # 502 / 404 가 아니면 경로는 살아 있다 (인자 없는 요청이라 400 이 정상일 수 있다)
 ```
 
@@ -112,7 +184,7 @@ curl -sS -o /dev/null -w 'websub %{http_code}\n'  "https://<HOST>/websub/youtube
 
 ```bash
 for i in $(seq 1 80); do
-  curl -sS -o /dev/null -w '%{http_code} ' "https://<HOST>/oauth/chzzk/callback"
+  curl -sS -o /dev/null -w '%{http_code} ' "https://<HOST>/oauth/callback"
 done; echo
 # 60건 근처부터 429 가 섞여야 한다.
 ```
@@ -140,7 +212,8 @@ sqlite3 ~/git/chzzkbot/data/bot.db \
 ```bash
 systemctl --user status cisnesdiscord --no-pager
 curl -sS http://127.0.0.1:8081/healthz
-journalctl --user -u cisnesdiscord -n 100 | grep -i 'bind'   # 127.0.0.1:8081 이어야 한다
+# ★ 앱 로그는 journald 가 아니라 파일이다 (§4-1 참조)
+grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1   # address · port
 npm run secrets:scan
 ```
 
@@ -166,6 +239,26 @@ npm run secrets:scan
 ---
 
 ## 4. 장애 대응
+
+### 4-0. ★★ 로그가 어디 있는가 — 먼저 알아야 한다
+
+| 무엇 | 어디 |
+|---|---|
+| **앱 로그 전부** (공지·폴링·경고·오류) | `data/logs/cisnes.<날짜>.<n>.log` — JSON 한 줄씩 (`pino-roll`) |
+| 기동 실패 배너 · systemd 기동/종료 | `journalctl --user -u cisnesdiscord` |
+
+> ★ 봇은 `pino-roll` 트랜스포트로 **파일에만** 쓴다. `journalctl` 에서 앱 로그를 찾으면
+> 늘 빈 결과가 나오고, 그것을 "이상 없음" 으로 읽게 된다 — 이 문서의 조회 명령이
+> 파일과 journald 중 어느 쪽인지 매번 밝혀 두는 이유다.
+>
+> ★ **디렉터리는 설정값이다** — `paths.logs`(기본 `data/logs`, `src/config/schema.ts`).
+> 이 문서의 명령은 기본값을 전제한다.
+>
+> ★★ **파일명 규칙의 주인은 `src/runtime/logger.ts` 다** (`file`·`frequency`·`dateFormat`
+> ·`extension`). 이 문서는 `cisnes.<날짜>.<n>.log` 를 **여러 곳에 하드코딩**하고 있고,
+> 그 규칙을 못 박는 테스트가 없다(테스트는 `destination` 을 주입해 파일 트랜스포트를
+> 타지 않는다). 로거의 그 설정을 건드리면 **이 문서의 조회 명령이 동시에 다시 빈
+> 결과가 된다** — 같이 고칠 것.
 
 ### 4-1. 종료 코드로 먼저 가른다
 
@@ -296,7 +389,13 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 ```bash
 systemctl --user status cisnesdiscord cisnesdiscord-watchdog.timer --no-pager
 curl -sS http://127.0.0.1:8081/healthz
-journalctl --user -u cisnesdiscord --since '24 hours ago' -p warning
+# 경고 이상(pino level ≥ 40). ★ journalctl 이 아니라 로그 파일이다
+# ★★ **어제·오늘 두 파일을 함께 본다.** 오늘 파일만 보면 자정 이후만 보이고,
+#   아침에 점검하면 **어젯밤 방송 시간대가 통째로 빠진다** — 이 봇이 가장 바쁜 때다.
+#   점검하는 사람은 "경고 이상 확인함" 으로 넘어가므로, 조용히 덜 보는 쪽이다.
+grep -h '"level":[456]0' \
+  data/logs/cisnes.$(date -d yesterday +%F).*.log \
+  data/logs/cisnes.$(date +%F).*.log | tail -40
 sqlite3 data/cisnes.db \
   "SELECT kind, detected_via, COUNT(*) FROM announcement_ledger
    WHERE claimed_at > datetime('now','-7 days') GROUP BY 1,2;"
@@ -448,15 +547,22 @@ chzzkbot 쪽 확인 결과(2026-09-07), 팔로워 동기화의 페이지 루프�
 "썸네일 생기면 다시 그리기" 는 만들지 않았고, 만들어서도 안 된다.
 
 공지를 낼 때마다 로그 한 줄이 남는다. **웹훅·폴링·기동복구 세 경로 모두** 이 줄을 남기므로
-감지 경로를 먼저 가릴 필요가 없다:
+감지 경로를 먼저 가릴 필요가 없다.
+
+> ★★ **앱 로그는 journald 에 없다.** `paths.logs`(기본 `data/logs`) 아래 파일로 나간다
+> (`pino-roll`, 날짜별 1파일). `journalctl` 에는 systemd 의 기동·종료 줄과 기동 실패
+> 배너만 남으므로, 아래 조회는 **파일을 봐야 한다.**
 
 ```bash
-journalctl --user -u cisnesdiscord -n 500 | grep '방송 공지 그림'
+grep '방송 공지 그림' ~/git/cisnesDiscord/data/logs/cisnes.*.log | tail
 ```
 
-```
-방송 공지 그림  liveHash=df09256e detectedVia=webhook image=live
-방송 공지 그림  liveHash=a1b2c3d4 detectedVia=api-poll image=channel imageDropped=["liveImageUrl"]
+JSON 한 줄로 남는다 (읽기 좋게 줄바꿈함):
+
+```json
+{"level":30,"liveHash":"df09256e","detectedVia":"webhook","image":"live","msg":"방송 공지 그림"}
+{"level":30,"liveHash":"a1b2c3d4","detectedVia":"api-poll","image":"channel",
+ "imageDropped":["liveImageUrl"],"msg":"방송 공지 그림"}
 ```
 
 **칸이 둘이고, 서로 다른 질문에 답한다.**
