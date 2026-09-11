@@ -25,6 +25,7 @@ import { createTextClient } from '../../src/youtube/http-text.js';
 import { parseFeed } from '../../src/youtube/feed-parse.js';
 import { createUploadFlow, type UploadFlow } from '../../src/youtube/upload-flow.js';
 import {
+  RESUBSCRIBE_COOLDOWN_MS,
   createWebSubClient,
   type LeaseWarning,
   type WebSubClient,
@@ -885,10 +886,15 @@ describe('AC-P7 — 갱신 연속 실패', () => {
     const h = harness();
     h.net.hubAccepts = false;
 
+    // ★ 스윕 사이에 시계를 민다. 실패하면 재시도 백오프가 걸리므로 같은 순간에
+    //   연달아 부르면 두 번째부터는 **시도 자체가 없다**(그래서 스트릭도 안 는다).
+    //   실제로도 스윕은 5분 간격이고, 연속 실패는 시간에 걸쳐 쌓인다.
     await h.websub.sweep();
+    h.clock.advance(30 * 60_000);
     await h.websub.sweep();
     expect(h.alerts).toHaveLength(0);
 
+    h.clock.advance(60 * 60_000);
     await h.websub.sweep();
     expect(h.alerts).toHaveLength(1);
     expect(h.alerts[0]).toMatchObject({
@@ -913,9 +919,11 @@ describe('AC-P7 — 갱신 연속 실패', () => {
     const h = harness();
     h.net.hubAccepts = false;
     await h.websub.sweep();
+    h.clock.advance(30 * 60_000); // ★ 백오프를 넘긴다 (위 테스트 주석 참조)
     await h.websub.sweep();
 
     h.net.hubAccepts = true;
+    h.clock.advance(60 * 60_000);
     await h.websub.sweep();
     expect(h.subs.get(CH)?.lastRenewError).toBeUndefined();
     expect(h.alerts).toHaveLength(0);
@@ -1059,5 +1067,37 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     expect(h.poller.failStreaks()[0]?.streak, '성공 후에도 간격이 늘어난 채였다').toBe(1);
 
     h.poller.stop();
+  });
+
+  it('★★ 구독이 실패하면 재시도 간격이 벌어진다 — 재시도가 막힘을 유지시키지 않게', async () => {
+    // 실측(2026-09-10)에서 이것이 없어 하루 414건이 나갔다. 상대는 우리 IP 를 이미
+    // 간헐적으로 조이던 구글이라, 재시도가 막힌 상태를 **유지시키는 쪽**으로 일했다.
+    const h = harness();
+    h.net.hubAccepts = false;
+    h.net.autoVerify = false;
+
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '첫 시도가 나가지 않았다').toHaveLength(1);
+
+    // 스윕 주기(300초)가 지나도 백오프(연속 1회 → 600초) 안이면 두드리지 않는다.
+    h.clock.advance(300_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '백오프 중인데 또 두드렸다').toHaveLength(1);
+
+    // 백오프가 지나면 다시 시도한다 — 영구히 멈추는 것이 아니다.
+    h.clock.advance(301_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '백오프가 끝났는데 시도하지 않았다').toHaveLength(2);
+
+    // ★ 허브가 회복되면 **즉시** 기본 리듬으로 돌아온다. 이 시점 연속 실패는 2회라
+    //   백오프가 남아 있었다면 1200초 > 쿨다운 600초라 아래 시도가 일어나지 않는다.
+    h.net.hubAccepts = true;
+    h.clock.advance(1_201_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests).toHaveLength(3);
+
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '성공 후에도 백오프가 남아 있었다').toHaveLength(4);
   });
 });

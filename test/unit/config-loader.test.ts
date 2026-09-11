@@ -15,6 +15,7 @@ import {
   CHZZKBOT_RETRY_WINDOW_MIN,
   FOLLOWER_UPSTREAM_WORST_AGE_MIN,
   UPSTREAM_FOLLOWER_CACHE_MIN,
+  MAX_YOUTUBE_CHANNELS,
   UPSTREAM_SWEEP_INTERVAL_MIN,
   isForbiddenConfigKey,
 } from '../../src/config/schema.js';
@@ -322,5 +323,33 @@ describe('시크릿 환경변수', () => {
     expect(() => loadSecrets({ ...VALID_ENV, DISCORD_OPS_WEBHOOK_URL: 'URL아님' })).toThrow(
       ConfigError,
     );
+  });
+});
+
+describe('★★ 유튜브 채널 수 상한 — 주석이 아니라 스키마가 지킨다', () => {
+  const ch = (i: number): string =>
+    `    - channelId: UC${String(i).padStart(2, '0')}abcdefghijklmnopqrst
+      label: ch${String(i)}`;
+  const withChannels = (n: number): string =>
+    `${VALID_YAML}youtube:
+  channels:
+${Array.from({ length: n }, (_, i) => ch(i)).join('\n')}
+`;
+
+  it(`설계 상한 ${String(MAX_YOUTUBE_CHANNELS)}개까지는 통과한다`, () => {
+    const cfg = loadConfig({
+      configPath: writeConfig(withChannels(MAX_YOUTUBE_CHANNELS)),
+      env: VALID_ENV,
+    });
+    expect(cfg.file.youtube.channels).toHaveLength(MAX_YOUTUBE_CHANNELS);
+  });
+
+  it('★★ 상한을 넘기면 기동을 거부한다 — 넘기면 WebSub 스윕이 주기를 넘겨 굶는다', () => {
+    // 스윕은 순차라 최악이 `WEBSUB_BUDGET_MS × 채널수` 다. 주기를 넘기면 다음 틱이
+    // 앞 틱과 겹쳐 재진입 가드에 `skipped` 로 접히고, 갱신이 조용히 멈춘다.
+    const err = capture(() =>
+      loadConfig({ configPath: writeConfig(withChannels(MAX_YOUTUBE_CHANNELS + 1)), env: VALID_ENV }),
+    );
+    expect(issueText(err)).toContain('최대');
   });
 });

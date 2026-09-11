@@ -66,7 +66,8 @@ describe('§5.6.1 표 — 호출별 타임아웃이 실제로 걸린다', () => 
     expect(CALL_TIMEOUT_MS['oauth-token']).toBe(5_000);
     expect(CALL_TIMEOUT_MS['users-me']).toBe(5_000);
     expect(CALL_TIMEOUT_MS['rss-poll']).toBe(5_000);
-    expect(CALL_TIMEOUT_MS['websub-subscribe']).toBe(5_000);
+    // ★ 5초에서 올렸다 — 하루치 실측에서 411건 타임아웃 / 3건 성공이었다.
+    expect(CALL_TIMEOUT_MS['websub-subscribe']).toBe(15_000);
   });
 });
 
