@@ -390,10 +390,34 @@ sqlite3 data/cisnes.db \
 |---|---|---|---|
 | **1** | **단일 길드 배포가 전제다** — `verification_sessions` 에 `guild_id` 컬럼이 없어 OAuth 콜백이 세션만으로 어느 서버인지 알 수 없다 | `guild_config` 에서 해석한다. 설정된 길드가 없으면 **인증을 진행하지 않고 실패**시킨다(길드를 추측하지 않는다) | `002` 로 `verification_sessions.guild_id` 추가 |
 | **2** | **AD-3 수동 승인 미구현** — `account_links.verified_by` 컬럼이 없다 | chzzkbot 다운 시 신규 온보딩이 멈춘다 (§4-6) | `002` 로 `account_links.verified_by` 추가 + 명령어 구현 |
+| **3** | **"보내지 않고 종결" 을 담을 칸이 없다** — `announcement_ledger` 에 `suppressed_at` 이 없다 | `announced_at` 을 채우고 `message_id` 를 **비워** 표현한다 (아래) | `002` 로 `suppressed_at`·`suppressed_reason` 추가 |
 
 > ★ **추측하지 않고 실패하는 쪽을 택한 이유.** 길드가 하나뿐인 배포에서 "아무 길드나
 > 고르기"는 대개 맞는 답을 내지만, 두 번째 길드가 생기는 날 **조용히 남의 서버에
 > 역할을 부여한다.** 우선순위 원칙(§3-a)으로 안 되는 것(2위)이 틀리는 것(3위)보다 낫다.
+
+#### 원장 행 읽는 법 — 발송과 종결을 가르는 것은 `message_id` 다
+
+늦어서 **내용이 틀려진** 공지는 보내지 않고 닫는다(이미 끝난 방송의 시작 공지, 기준
+시간을 넘긴 업로드). 그 결과가 원장에 이렇게 남는다:
+
+```sql
+SELECT kind, event_key, announced_at, message_id, last_error
+  FROM announcement_ledger WHERE announced_at IS NOT NULL;
+```
+
+| `message_id` | 뜻 |
+|---|---|
+| 값이 있음 | **발송했다.** 그 값이 디스코드 메시지 주소다 |
+| `NULL` | **보내지 않고 종결했다.** 사유는 `last_error` 에 있다 |
+
+> ★ 즉 이 표에서 `announced_at` 은 *"공지한 시각"* 이 아니라 **"이 행이 종결된 시각"**
+> 이다. 칸 이름이 새 뜻을 다 담지 못하는 것은 위 표 3번이 기다리는 마이그레이션에서
+> 정리된다. `markSent` 는 두 값을 **항상 같이** 채우므로 둘은 언제든 갈린다.
+
+**아직 안 끝난 일**을 세려면 `announced_at IS NULL` 을 본다. 단 시드 행(`seeded=1`
+또는 `detected_via='seed'`)은 설계상 영원히 그 상태이므로 **빼고 세야 한다** —
+아웃박스도 같은 조건으로 회수한다.
 
 ### 8-b. ★ 상류 팔로워 동기화 상한 — **10,000명**
 

@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAnnouncementLedgerRepo } from '../../src/store/repos/announcement-ledger-repo.js';
 import type { AnnouncementLedgerRepo } from '../../src/store/repos/announcement-ledger-repo.js';
 import {
+  isStaleUploadResend,
   DEFAULT_DOWNTIME_THRESHOLD_HOURS,
   formatDuration,
   measureDowntime,
@@ -353,5 +354,38 @@ describe('유튜브 복구 — 지나간 이벤트라 생략 대상이다', () =
     expect(r.kind).toBe('skipped');
     expect(announce).not.toHaveBeenCalled();
     expect(r.kind === 'skipped' && r.durationText).toContain('불명');
+  });
+});
+
+describe('★★ 너무 늦은 업로드 재발송은 보내지 않는다 (AC-30 과 같은 임계)', () => {
+  const NOW = Date.parse('2026-09-10T12:00:00.000Z');
+  const H = 60 * 60 * 1_000;
+
+  it('기준(6시간)을 넘기면 보내지 않는다', () => {
+    expect(isStaleUploadResend(NOW - 7 * H, NOW)).toBe(true);
+    expect(isStaleUploadResend(Date.parse('2026-09-08T11:11:01.023Z'), NOW)).toBe(true);
+  });
+
+  it('★ 경계는 measureDowntime 과 같다 — 정확히 6시간이면 보내는 쪽이다', () => {
+    expect(isStaleUploadResend(NOW - 6 * H, NOW)).toBe(false);
+    expect(isStaleUploadResend(NOW - 6 * H - 1, NOW)).toBe(true);
+  });
+
+  it('갓 감지한 건은 당연히 보낸다', () => {
+    expect(isStaleUploadResend(NOW - 60_000, NOW)).toBe(false);
+  });
+
+  it('★★ 시각을 못 읽으면 보낸다 — 파싱 실패가 누락 사유가 되면 안 된다', () => {
+    expect(isStaleUploadResend(undefined, NOW)).toBe(false);
+    expect(isStaleUploadResend(Number.NaN, NOW)).toBe(false);
+  });
+
+  it('★ 시계가 뒤로 가도 억제하지 않는다', () => {
+    expect(isStaleUploadResend(NOW + 10 * H, NOW)).toBe(false);
+  });
+
+  it('임계값은 설정에서 온다 — 6시간이 박혀 있지 않다', () => {
+    expect(isStaleUploadResend(NOW - 2 * H, NOW, 1)).toBe(true);
+    expect(isStaleUploadResend(NOW - 2 * H, NOW, 24)).toBe(false);
   });
 });

@@ -39,7 +39,7 @@ export type OutboundCall =
   | 'oauth-revoke'
   /** RSS 폴 1건 — 5초 */
   | 'rss-poll'
-  /** WebSub 구독·갱신 — 5초 */
+  /** WebSub 구독·갱신 — 15초 (허브가 느리다. 아래 표 주석 참조) */
   | 'websub-subscribe';
 
 /** §5.6.1 표의 "회당 타임아웃". **여기서만 정의한다** */
@@ -50,7 +50,16 @@ export const CALL_TIMEOUT_MS: Readonly<Record<OutboundCall, number>> = {
   'users-me': 5_000,
   'oauth-revoke': 5_000,
   'rss-poll': 5_000,
-  'websub-subscribe': 5_000,
+  /**
+   * ★★ **5초가 아니다.** 실측(2026-09-10, 하루치): 5초 예산으로 구독 요청 **411건이
+   *   타임아웃**하고 **3건만** 202 를 받았다. `pubsubhubbub.appspot.com` 은 구독 접수
+   *   전에 토픽·콜백 쪽 일을 하고 답하므로 다른 호출들과 응답 특성이 다르다.
+   *
+   * ★ 타임아웃이 이 호출에서 특히 비싼 이유: 실패해도 **구독이 성립하지 않을 뿐**
+   *   조용하다. 봇은 정상 기동하고 업로드 공지는 RSS 폴백으로 굴러가서, 유일한
+   *   표시가 `websub_subscriptions.lease_seconds` 가 비어 있는 것뿐이다.
+   */
+  'websub-subscribe': 15_000,
 };
 
 /**
