@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
+import { MAX_YOUTUBE_CHANNELS } from '../../src/config/schema.js';
 import {
   CALL_TIMEOUT_MS,
 } from '../../src/runtime/http-budget.js';
@@ -156,7 +157,10 @@ describe('★★ 회당 타임아웃과 작업 예산은 짝이다', () => {
     expect(WEBSUB_BUDGET_MS).toBeGreaterThan(CALL_TIMEOUT_MS['websub-subscribe']);
   });
 
-  it('★ 스윕 한 바퀴(채널 2개 최악)가 스윕 주기 안에 끝난다', () => {
-    expect(WEBSUB_BUDGET_MS * 2).toBeLessThan(WEBSUB_SWEEP_SEC * 1_000);
+  it('★★ 스윕 한 바퀴가 **설계 상한 채널 수**로도 주기 안에 끝난다', () => {
+    // ★ 2(지금 배포의 수)로 단언하면 계약이 아니라 현황을 고정한다. 스윕은 순차라
+    //   실제 불변식은 `예산 × N < 주기` 이고, N 의 계약값은 `MAX_YOUTUBE_CHANNELS` 다.
+    //   넘기면 다음 틱이 앞 틱과 겹쳐 재진입 가드에 접히고 갱신이 조용히 굶는다.
+    expect(WEBSUB_BUDGET_MS * MAX_YOUTUBE_CHANNELS).toBeLessThan(WEBSUB_SWEEP_SEC * 1_000);
   });
 });

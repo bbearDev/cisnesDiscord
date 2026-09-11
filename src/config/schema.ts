@@ -208,8 +208,25 @@ const AuthSchema = z.object({
  *   RSS 폴백은 "누락 0"을 지키는 장치이지 "1분"을 지키는 장치가 아니다 —
  *   WebSub 이 죽은 동안 발견된 영상은 1분을 넘겨 공지될 수 있고 그것은 설계된 동작이다.
  */
+/**
+ * 설계가 정한 유튜브 채널 상한 (§5.3 "2~5개").
+ *
+ * ★ 여기서만 정의한다. WebSub 스윕의 예산 부등식(`예산 × N < 주기`)이 이 값을 축으로
+ *   서므로, 값을 올리려면 `WEBSUB_BUDGET_MS` 나 `WEBSUB_SWEEP_SEC` 를 같이 봐야 한다.
+ */
+export const MAX_YOUTUBE_CHANNELS = 5;
+
 const YoutubeSchema = z.object({
-  /** 감시할 채널 2~5개. `UC…` 형식 (S0-10) */
+  /**
+   * 감시할 채널 2~5개. `UC…` 형식 (S0-10).
+   *
+   * ★★ **상한 5 를 실제로 강제한다.** 예전에는 주석에만 "2~5개" 라 적혀 있어 10개를
+   *   적어도 설정이 통과했다. 그러면 WebSub 스윕 한 바퀴가 주기를 넘긴다 —
+   *   스윕은 **순차**라 최악이 `WEBSUB_BUDGET_MS × 채널수` 이고, 30초 × 10 = 300초로
+   *   기본 주기(`WEBSUB_SWEEP_SEC` 300초)와 같아진다. 그러면 다음 틱이 앞 틱과 겹치고
+   *   재진입 가드에 `skipped` 로 접혀 **갱신이 조용히 굶는다.**
+   *   `websub-lease.test.ts` 가 이 상한을 축으로 부등식을 지킨다.
+   */
   channels: z
     .array(
       z.object({
@@ -217,6 +234,7 @@ const YoutubeSchema = z.object({
         label: z.string().min(1),
       }),
     )
+    .max(MAX_YOUTUBE_CHANNELS, `유튜브 채널은 최대 ${String(MAX_YOUTUBE_CHANNELS)}개입니다 (§5.3)`)
     .default([]),
   /**
    * RSS 폴백 주기 (기본 300초).
