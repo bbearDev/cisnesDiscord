@@ -42,6 +42,13 @@ export interface SentRecord {
   seq: number;
 }
 
+export interface EditRecord {
+  channelId: string;
+  messageId: string;
+  payload: SendPayload;
+  at: number;
+}
+
 export interface RoleGrantRecord {
   guildId: string;
   userId: string;
@@ -87,6 +94,8 @@ export interface FakeDiscordOptions {
 
 export interface FakeDiscord extends DiscordGateway {
   readonly sent: readonly SentRecord[];
+  /** `editMessage` 호출 기록 (인증 패널 갱신) */
+  readonly edited: readonly EditRecord[];
   readonly roleGrants: readonly RoleGrantRecord[];
   readonly nicknames: readonly NicknameRecord[];
   readonly loginCount: number;
@@ -105,6 +114,11 @@ export interface FakeDiscord extends DiscordGateway {
   failAlways(failure?: FakeFailure): void;
   /** 발송 지연을 바꾼다 */
   setDelayMs(ms: number): void;
+  /**
+   * ★ 이 메시지를 "지워진 것" 으로 만든다 — 이후 `editMessage` 가 **404** 를 낸다.
+   *   인증 패널의 "누가 지웠으면 새로 올린다" 경로는 이 주입으로만 검증된다.
+   */
+  forgetMessage(messageId: string): void;
   /** 기록을 비운다 (재시작 시나리오) */
   reset(): void;
 }
@@ -131,6 +145,8 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
   const counter = createGatewayCounter();
 
   const sent: SentRecord[] = [];
+  const edited: EditRecord[] = [];
+  const forgotten = new Set<string>();
   const roleGrants: RoleGrantRecord[] = [];
   const nicknames: NicknameRecord[] = [];
   const gatewayEvents: GatewayEventRecord[] = [];
@@ -190,6 +206,9 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
     get sent() {
       return sent;
     },
+    get edited() {
+      return edited;
+    },
     get roleGrants() {
       return roleGrants;
     },
@@ -227,6 +246,20 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
       const messageId = `fake-msg-${String(seq)}`;
       sent.push({ channelId, payload, messageId, at: now(), seq });
       return { id: messageId };
+    },
+
+    async editMessage(
+      channelId: string,
+      messageId: string,
+      payload: SendPayload,
+      sendOpts?: SendOptions,
+    ): Promise<void> {
+      await gate(nextFailure(), sendOpts?.signal);
+      // ★ 실제 디스코드가 내는 모양 그대로 — `status: 404`. 프로덕션은 `status` 만 본다.
+      if (forgotten.has(messageId)) {
+        throw new DiscordSendError('unknown', 'Unknown Message', 404);
+      }
+      edited.push({ channelId, messageId, payload, at: now() });
     },
 
     async addRole(guildId: string, userId: string, roleId: string, sendOpts?: SendOptions): Promise<void> {
@@ -291,6 +324,10 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
       delayMs = ms;
     },
 
+    forgetMessage(messageId: string): void {
+      forgotten.add(messageId);
+    },
+
     /**
      * ★ `reconnectCount` 와 게이트웨이 기록은 **비우지 않는다.**
      *   운영 지표 `discord_gateway_reconnects` 가 프로세스 생애 누적값이므로
@@ -299,6 +336,8 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
      */
     reset(): void {
       sent.length = 0;
+      edited.length = 0;
+      forgotten.clear();
       roleGrants.length = 0;
       nicknames.length = 0;
       queued.length = 0;

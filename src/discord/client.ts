@@ -1,4 +1,5 @@
 import { Client, GatewayIntentBits, Routes } from 'discord.js';
+import type { ButtonStyle, ComponentType } from 'discord.js';
 
 /**
  * 디스코드 게이트웨이 클라이언트 (계획 §S3).
@@ -112,9 +113,39 @@ export interface AnnouncementEmbed {
   image?: { url: string };
 }
 
+/**
+ * 메시지 컴포넌트 — 버튼만 쓴다 (`discord.js` 의 `APIActionRowComponent` 부분집합).
+ *
+ * ★ 빌더(`ButtonBuilder`)를 쓰지 않는다. 명령 정의와 같은 이유다 — 테스트가 비교할 수
+ *   있는 것은 결국 디스코드로 나가는 이 JSON 이고, 중간 표현을 하나 줄인다.
+ *   `type`/`style` 을 enum 리터럴로 박아 `interaction.reply()` 의 타입에 그대로 맞는다.
+ */
+export interface LinkButton {
+  type: ComponentType.Button;
+  style: ButtonStyle.Link;
+  label: string;
+  /** ★ 여기 실린 URL 은 본문 링크가 아니라 **미리보기 크롤링 대상이 아니다** */
+  url: string;
+}
+
+export interface ActionButton {
+  type: ComponentType.Button;
+  style: ButtonStyle.Primary | ButtonStyle.Secondary | ButtonStyle.Success | ButtonStyle.Danger;
+  label: string;
+  /** 상호작용이 이 값을 들고 돌아온다. 재기동을 넘어 유효해야 하므로 상태를 싣지 않는다 */
+  custom_id: string;
+  disabled?: boolean;
+}
+
+export interface ActionRow {
+  type: ComponentType.ActionRow;
+  components: (LinkButton | ActionButton)[];
+}
+
 export interface SendPayload {
   content?: string;
   embeds?: AnnouncementEmbed[];
+  components?: ActionRow[];
 }
 
 export interface SentMessage {
@@ -130,6 +161,18 @@ export interface DiscordGateway {
   login(): Promise<void>;
   destroy(): Promise<void>;
   send(channelId: string, payload: SendPayload, opts?: SendOptions): Promise<SentMessage>;
+  /**
+   * 우리가 보낸 메시지를 제자리에서 고친다 (인증 패널 갱신).
+   *
+   * ★ 메시지가 사라졌으면 `DiscordSendError` 의 `status` 가 **404** 다 — 호출부가
+   *   그것을 보고 "새로 올린다" 로 간다. 다른 실패는 새로 올리지 않는다(패널이 둘이 된다).
+   */
+  editMessage(
+    channelId: string,
+    messageId: string,
+    payload: SendPayload,
+    opts?: SendOptions,
+  ): Promise<void>;
   addRole(guildId: string, userId: string, roleId: string, opts?: SendOptions): Promise<void>;
   setNickname(
     guildId: string,
@@ -281,6 +324,15 @@ export function createDiscordGateway(opts: DiscordGatewayOptions): DiscordGatewa
         throw new DiscordSendError('unknown', '발송 응답에 messageId 가 없습니다');
       }
       return { id };
+    },
+
+    async editMessage(channelId, messageId, payload, sendOpts): Promise<void> {
+      await call(() =>
+        client.rest.patch(Routes.channelMessage(channelId, messageId), {
+          body: payload,
+          ...(sendOpts?.signal ? { signal: sendOpts.signal } : {}),
+        }),
+      );
     },
 
     async addRole(guildId, userId, roleId, sendOpts): Promise<void> {

@@ -66,6 +66,32 @@ systemctl --user enable --now cisnesdiscord.service
 systemctl --user enable --now cisnesdiscord-watchdog.timer
 ```
 
+### 1-2-a. ★★ `guild_config` 시딩 — 없으면 슬래시 명령도 인증 패널도 안 뜬다
+
+채널·역할 id 는 설정 파일이 아니라 DB 에 있다(`guild_config`, 단일 길드 전제). **행이 정확히 하나**여야
+슬래시 명령이 등록되고, `gate_channel_id` 가 있어야 인증 패널이 게시된다.
+
+```bash
+sqlite3 data/cisnes.db "
+INSERT INTO guild_config
+  (guild_id, verified_role_id, gate_channel_id, live_channel_id, upload_channel_id, ops_channel_id, updated_at)
+VALUES
+  ('<길드ID>', '<인증역할ID>', '<게이트채널ID>', '<방송공지채널ID>', '<업로드공지채널ID>', NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+ON CONFLICT (guild_id) DO UPDATE SET
+  verified_role_id  = excluded.verified_role_id,
+  gate_channel_id   = excluded.gate_channel_id,
+  live_channel_id   = excluded.live_channel_id,
+  upload_channel_id = excluded.upload_channel_id,
+  updated_at        = excluded.updated_at;"
+```
+
+> ★ **멤버의 인증 진입점은 슬래시 명령이 아니라 게이트 채널의 패널(임베드 + 버튼)이다.**
+> 봇이 기동할 때 `gate_channel_id` 채널에 패널을 올리고(재기동마다 최신 문안으로 갱신), 누가 지우면
+> 다음 기동에 다시 올린다. 게이트 채널은 **디스코드 안에서 `/인증채널 채널:#게이트` 로도 바꿀 수 있다**
+> (운영자 전용 — 저장하고 그 자리에서 게시한다). 채널을 옮겨도 옛 패널은 지우지 않으므로 직접 지운다.
+>
+> 봇이 게이트 채널에서 `View Channel` · `Send Messages` · `Embed Links` 를 가져야 한다(S0-7).
+
 ### 1-3. ★★ `enable-linger` — 빠뜨리면 AC-33 이 재부팅 한 번에 깨진다
 
 ```bash
@@ -213,9 +239,14 @@ sqlite3 ~/git/chzzkbot/data/bot.db \
 systemctl --user status cisnesdiscord --no-pager
 curl -sS http://127.0.0.1:8081/healthz
 # ★ 앱 로그는 journald 가 아니라 파일이다 (§4-1 참조)
-grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1   # address · port
+grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1   # address · port · authPanel
 npm run secrets:scan
 ```
+
+> ★★ `기동을 마쳤습니다` 의 **`authPanel`** 값을 본다. `posted`/`updated` 가 정상이다.
+> `skipped:no-gate-channel` 이면 `guild_config.gate_channel_id` 가 비어 있고, `skipped:send-failed` 면
+> 봇이 그 채널에 쓸 수 없다 — **둘 다 멤버가 인증을 시작할 수 없는 상태**다 (§4-7).
+> 게이트 채널에 패널이 실제로 보이는지 눈으로도 확인한다.
 
 ---
 
@@ -313,7 +344,7 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 
 ### 4-6. ★ chzzkbot 이 죽었을 때 — 온보딩이 멈춘다
 
-**증상**: `/인증` 이 전부 `unknown`(보류)으로 끝난다. `live_api_unknown_streak` 상승, AC-P2 경보.
+**증상**: 인증이 전부 `unknown`(보류)으로 끝난다. `live_api_unknown_streak` 상승, AC-P2 경보.
 
 > ## ⚠️ AD-3 수동 승인은 **아직 구현되지 않았다**
 >
@@ -327,6 +358,27 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 >
 > 이것은 알면서 받아들인 상태다 — 계획 §12-b-1 이 *"chzzkbot 다운 시 폭발 반경이
 > AC 표면 1/3 → 2/3(온보딩 포함)"* 로 이미 기록했다.
+
+### 4-7. ★ 인증 패널이 없다 / 버튼이 안 보인다 — 멤버가 인증을 시작할 수 없다
+
+멤버의 진입점은 게이트 채널의 패널 하나다. 패널이 없으면 **진입점이 0개**다 (슬래시 `/인증` 은 없다).
+
+```bash
+grep -h '기동을 마쳤습니다' data/logs/cisnes.*.log | tail -1 | grep -o '"authPanel":"[^"]*"'
+grep -h '인증 패널' data/logs/cisnes.*.log | tail -5
+sqlite3 data/cisnes.db "SELECT gate_channel_id FROM guild_config; SELECT value FROM runtime_state WHERE key='auth_panel';"
+```
+
+| `authPanel` | 원인 | 조치 |
+|---|---|---|
+| `skipped:no-gate-channel` | `guild_config.gate_channel_id` 가 NULL | 운영자가 디스코드에서 `/인증채널 채널:#게이트` 실행 (즉시 게시됨) |
+| `skipped:send-failed` | 봇이 그 채널에 쓸 수 없다 (403) · 채널이 지워졌다 | 채널 권한(`View Channel`·`Send Messages`·`Embed Links`) 또는 `/인증채널` 로 다른 채널 지정. ★ **`detail` 이 `timeout` 이면 패널이 실제로 올라갔을 수 있다** — 채널을 눈으로 확인하고, 있으면 그 메시지를 지운 뒤 다시 실행한다 (안 지우면 둘이 된다) |
+| `skipped:state-unreadable` | `runtime_state` 를 읽지 못했다 (DB 잠김·손상) | §4-4. 위치를 모르는 채 올리면 둘이 될 수 있어 봇이 아무것도 하지 않은 것이다 |
+| `skipped:edit-failed` | 갱신(PATCH)이 429·5xx·타임아웃으로 실패. 패널은 대개 아직 있다 | 게이트 채널을 눈으로 확인. 있으면 정상 — 다음 기동에 다시 갱신한다 |
+| `updated`/`posted` 인데 안 보인다 | 누가 그 뒤에 지웠다 | 재기동(404 → 재게시) 또는 `/인증채널` 로 같은 채널 재지정 |
+
+> 버튼을 눌렀는데 *"이 버튼은 더 이상 쓰이지 않습니다"* 가 나오면 **옛 버전 패널**이다 — 최신 패널을 쓰게
+> 안내하고 옛 메시지를 지운다. 버튼 `custom_id` 는 코드에 박혀 있어 재기동·재배포를 넘어 유효하다.
 
 **아래는 AD-3 를 구현할 때의 규칙이다 (현재는 참고용).**
 **break-glass 이지 모드가 아니다. "게이트를 끈다"는 스위치를 만들지 않는다.**
@@ -369,7 +421,7 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 
 ---
 
-## 6. S9 수동 검증 — 사람이 실제로 해야 하는 4건
+## 6. S9 수동 검증 — 사람이 실제로 해야 하는 5건
 
 자동화할 수 없다. 출시 전 1회, 이후 회귀 의심 시 재실행.
 
@@ -379,6 +431,7 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 | **M-2** | M-1 상태에서 스트리머가 채팅 한 줄 입력 | 세션이 열리고 `confirmed` 도달 후 **공지 1건**, `detected_via='webhook'` |
 | **M-3** | 다른 프로세스로 8081 을 점유한 채 `systemctl --user start` | 30초 백오프 후 **exit 78**, `status` 가 `failed`. 로그에 `ss -ltnp` 안내. **무한 재시작이 없어야 한다** |
 | **M-4** | 새 계정으로 서버 입장 후 채널 목록 확인 | 안내 채널만 보인다. 인증 후 전부 보인다. **S0-9 디스코드 권한 설정의 결과이므로 봇 코드가 아니라 사람이 눈으로 확인한다** |
+| **M-5** | 게이트 채널 패널의 **[치지직 계정 인증]** 클릭 → 답장의 **[치지직에서 인증 진행]** 클릭 | 답장은 본인에게만 보이고 **본문에 URL 이 없다**(링크는 버튼에만). 치지직 동의 뒤 역할 부여. 봇을 재기동해도 같은 패널의 버튼이 계속 동작한다 |
 
 > **M-1 을 건너뛰면 "누락 0"의 실제 범위를 아무도 확인하지 않은 채 출시된다.**
 
@@ -402,6 +455,7 @@ sqlite3 data/cisnes.db \
 ```
 
 **보는 법**
+- 게이트 채널에 인증 패널이 **하나** 있는지 (없으면 §4-7, 둘이면 옛 것을 지운다)
 - `detected_via='api-poll'` 이 늘고 `webhook` 이 줄면 → 웹훅 경로가 병들고 있다 (AC-P6 이 잡는다)
 - `youtube_upload` 의 `rss` 비율이 늘면 → WebSub 이 병들고 있다 (AC-P4/P7 이 잡는다)
 - `announcement_claim_conflicts` 가 **0 이면 오히려 이상하다** — 원장이 실제로 막고 있다는 증거가 없다는 뜻

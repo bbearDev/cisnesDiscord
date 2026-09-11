@@ -33,6 +33,7 @@ export const GUILD = '111111111111111111';
 export const LIVE_CHANNEL = '222222222222222222';
 export const UPLOAD_CHANNEL = '333333333333333333';
 export const VERIFIED_ROLE = '444444444444444444';
+export const GATE_CHANNEL = '555555555555555555';
 export const YT_CHANNEL = `UC${'a'.repeat(22)}`;
 
 /** 조립에 필요한 것은 '비어 있지 않은 값' 뿐이다. 실제 모양을 흉내 낼 이유가 없다 */
@@ -170,6 +171,7 @@ export function seedDb(dbPath: string, guild = true, seed?: (db: Db) => void): v
       {
         guildId: GUILD,
         verifiedRoleId: VERIFIED_ROLE,
+        gateChannelId: GATE_CHANNEL,
         liveChannelId: LIVE_CHANNEL,
         uploadChannelId: UPLOAD_CHANNEL,
       },
