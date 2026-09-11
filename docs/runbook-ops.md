@@ -94,10 +94,28 @@ chmod 600 ~/.config/cisnesdiscord/watchdog.env
 
 ```bash
 # 값을 출력하지 않고 일치 여부만 본다 (둘 다 시크릿이다)
-ours=$(grep -h '^CHZZK_CLIENT_ID=' ~/git/cisnesDiscord/.env | cut -d= -f2-)
-theirs=$(grep -h '^CHZZK_CLIENT_ID=' ~/git/chzzkbot/.env | cut -d= -f2-)
-[ "$ours" = "$theirs" ] && echo '★★ 같음 — 배포 중단' || echo "다름 (정상) — ${ours:0:6}… / ${theirs:0:6}…"
+# tr 인자 "\"'" 는 큰따옴표와 작은따옴표 두 글자다 — 값에 붙은 따옴표를 벗긴다
+read_id() { grep -h '^CHZZK_CLIENT_ID=' "$1" | cut -d= -f2- | tr -d "\"'"; }
+ours=$(read_id ~/git/cisnesDiscord/.env)
+theirs=$(read_id ~/git/chzzkbot/.env)
+
+if [ -z "$ours" ] || [ -z "$theirs" ]; then
+  echo "읽지 못했다 — 경로·권한을 확인하라 (대조하지 못했다)"
+elif [ "$ours" = "$theirs" ]; then
+  echo '★★ 같음 — 배포 중단'
+else
+  echo "다름 (정상) — ${ours:0:6}… / ${theirs:0:6}…"
+fi
 ```
+
+> ★ **빈 값을 "같음" 으로 세지 않는다.** 파일을 못 읽으면 양쪽이 빈 문자열이 되어
+> `"" = ""` 로 *"★★ 같음 — 배포 중단"* 이 뜬다. 멈추는 방향이라 안전하긴 하지만
+> **문구가 틀려서** 있지도 않은 `clientId` 충돌을 찾아 나서게 되고, 진짜 원인
+> (경로 오타·권한)은 화면에 안 나온다.
+>
+> ★★ **따옴표를 벗긴다.** `CHZZK_CLIENT_ID="abc"` 처럼 한쪽만 따옴표가 붙어 있으면
+> **같은 값인데 "다름(정상)"** 이 나온다. 이쪽은 위험한 방향이다 — 배포를 멈춰야 할
+> 상황을 통과시킨다.
 
 > ★ 예전에는 이 자리에 `journalctl … | grep -i clientId` 가 있었는데 **봇이 `clientId` 를
 > 로그에 찍지 않는다.** 늘 빈 결과가 나오고, 그걸 "다르다" 로 읽으면 이 불변식은
@@ -232,6 +250,15 @@ npm run secrets:scan
 > ★ 봇은 `pino-roll` 트랜스포트로 **파일에만** 쓴다. `journalctl` 에서 앱 로그를 찾으면
 > 늘 빈 결과가 나오고, 그것을 "이상 없음" 으로 읽게 된다 — 이 문서의 조회 명령이
 > 파일과 journald 중 어느 쪽인지 매번 밝혀 두는 이유다.
+>
+> ★ **디렉터리는 설정값이다** — `paths.logs`(기본 `data/logs`, `src/config/schema.ts`).
+> 이 문서의 명령은 기본값을 전제한다.
+>
+> ★★ **파일명 규칙의 주인은 `src/runtime/logger.ts` 다** (`file`·`frequency`·`dateFormat`
+> ·`extension`). 이 문서는 `cisnes.<날짜>.<n>.log` 를 **여러 곳에 하드코딩**하고 있고,
+> 그 규칙을 못 박는 테스트가 없다(테스트는 `destination` 을 주입해 파일 트랜스포트를
+> 타지 않는다). 로거의 그 설정을 건드리면 **이 문서의 조회 명령이 동시에 다시 빈
+> 결과가 된다** — 같이 고칠 것.
 
 ### 4-1. 종료 코드로 먼저 가른다
 
@@ -363,7 +390,12 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 systemctl --user status cisnesdiscord cisnesdiscord-watchdog.timer --no-pager
 curl -sS http://127.0.0.1:8081/healthz
 # 경고 이상(pino level ≥ 40). ★ journalctl 이 아니라 로그 파일이다
-grep -h '"level":[456]0' data/logs/cisnes.$(date +%F).*.log | tail -20
+# ★★ **어제·오늘 두 파일을 함께 본다.** 오늘 파일만 보면 자정 이후만 보이고,
+#   아침에 점검하면 **어젯밤 방송 시간대가 통째로 빠진다** — 이 봇이 가장 바쁜 때다.
+#   점검하는 사람은 "경고 이상 확인함" 으로 넘어가므로, 조용히 덜 보는 쪽이다.
+grep -h '"level":[456]0' \
+  data/logs/cisnes.$(date -d yesterday +%F).*.log \
+  data/logs/cisnes.$(date +%F).*.log | tail -40
 sqlite3 data/cisnes.db \
   "SELECT kind, detected_via, COUNT(*) FROM announcement_ledger
    WHERE claimed_at > datetime('now','-7 days') GROUP BY 1,2;"
