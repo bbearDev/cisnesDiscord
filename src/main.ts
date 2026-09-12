@@ -1342,6 +1342,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     // ★ 상호작용 → 명령 접기는 `discord/interactions.ts` 가 한다 (거기서 시험된다).
     const onInteraction = createInteractionRouter({
       commands,
+      buttons,
       dispatchCommand,
       dispatchButton,
       targetUserOption: TARGET_OPTION_NAME,

@@ -324,9 +324,11 @@ describe('인증 (§S4)', () => {
     for (const c of app.commands.values()) {
       expect(c.definition.default_member_permissions, c.definition.name).toBe('32');
     }
-    // `/인증채널` 만 응답 전에 REST 를 부르므로 defer 다
+    // 응답 전에 REST 를 부를 수 있는 것만 defer 다 — `/인증채널`(패널 게시) · `인증` 버튼(역할 재부여)
     expect(app.commands.get(GATE_CHANNEL_COMMAND_NAME)?.defer).toBe(true);
     expect(app.commands.get('연동해제')?.defer).toBeUndefined();
+    expect(app.buttons.get(AUTH_PANEL_BUTTON_LINK)?.defer).toBe(true);
+    expect(app.buttons.get(AUTH_PANEL_BUTTON_STATUS)?.defer).toBeUndefined();
   });
 
   it('★ guild_config 가 없으면 인증을 진행하지 않는다 — 아무 길드나 고르지 않는다', async () => {

@@ -2,7 +2,7 @@ import { MessageFlags, PermissionFlagsBits } from 'discord.js';
 import type { Interaction } from 'discord.js';
 
 import type { ActionRow } from './client.js';
-import type { CommandContext, CommandReply, SlashCommand } from './commands/types.js';
+import type { Command, CommandContext, CommandReply, SlashCommand } from './commands/types.js';
 
 /**
  * 디스코드 상호작용 → 명령 (계획 §S4 · `docs/spec-auth-panel.md` D-4).
@@ -18,11 +18,19 @@ import type { CommandContext, CommandReply, SlashCommand } from './commands/type
  *   `defer` 명령은 `deferReply` → `editReply` 한 쌍, 나머지는 `reply` 한 번이다.
  *   `dispatch*` 는 던지지 않기로 돼 있고(조립부가 감싼다), 여기서 새는 것은 디스코드 REST
  *   자체의 실패뿐이다 — 그것은 호출부가 로그로 받는다.
+ *
+ * ★★ **`defer` 계약은 버튼과 슬래시에 똑같이 적용된다.** 버튼이라고 REST 를 안 타는 것이
+ *   아니다 — `인증` 버튼의 역할 재부여 경로가 `addRole` 을 부른다(`commands/link.ts`). 그 2.5초
+ *   상한에 `reply` 왕복까지 더하면 3초 창에 남는 것이 ~500ms 뿐이라, 하필 복구 경로에서
+ *   "응답 없음" 이 날 확률이 가장 높았다 (PR #8 리뷰). 명령이 `defer` 를 들면 진입 수단과
+ *   무관하게 먼저 "생각 중" 을 보낸다.
  */
 
 export interface InteractionRouterDeps {
   /** 슬래시로 등록된 명령. `defer` 판정에만 쓴다 — 실행은 `dispatchCommand` 가 한다 */
   commands: ReadonlyMap<string, SlashCommand>;
+  /** 패널 버튼 `custom_id` → 명령. 역시 `defer` 판정에만 쓴다 — 실행은 `dispatchButton` 이 한다 */
+  buttons: ReadonlyMap<string, Command>;
   dispatchCommand(name: string, ctx: CommandContext): Promise<CommandReply>;
   dispatchButton(customId: string, ctx: CommandContext): Promise<CommandReply>;
   /** `/연동해제` · `/연동상태` 의 멤버 옵션 이름 */
@@ -60,8 +68,11 @@ export function createInteractionRouter(
     };
 
     if (interaction.isButton()) {
+      const deferred = deps.buttons.get(interaction.customId)?.defer === true;
+      if (deferred) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const reply = await deps.dispatchButton(interaction.customId, base);
-      await interaction.reply({ ...replyBody(reply), flags: MessageFlags.Ephemeral });
+      if (deferred) await interaction.editReply(replyBody(reply));
+      else await interaction.reply({ ...replyBody(reply), flags: MessageFlags.Ephemeral });
       return;
     }
 

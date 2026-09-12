@@ -54,10 +54,13 @@ export const LINK_BUTTON_LABEL = '치지직에서 인증 진행';
 /**
  * 역할 재부여 REST 한 번의 상한.
  *
- * ★ 버튼 상호작용은 **3초 안에** 첫 응답이 가야 한다. `@discordjs/rest` 의 기본은 15초 타임아웃에
- *   429 를 잠들며 기다리는 것이라, 그대로 두면 상류가 느린 날 응답이 3초를 넘겨 사용자는
- *   "애플리케이션이 응답하지 않음" 만 보고 쿨다운은 소모된다. 여기서 끊으면 `timeout` 실패로
- *   접혀 `gateFailedMessage` 가 제때 나간다.
+ * ★ `@discordjs/rest` 의 기본은 15초 타임아웃에 429 를 잠들며 기다리는 것이라, 그대로 두면
+ *   상류가 느린 날 사람이 그만큼 기다리고 쿨다운은 소모된다. 여기서 끊으면 `timeout` 실패로
+ *   접혀 `gateFailedMessage` 가 나간다.
+ *
+ * ★ 이 값이 3초 응답 창 안이라고 **안심하면 안 된다** — 그 뒤에 답장 왕복이 한 번 더 있다.
+ *   그래서 이 명령은 `defer: true` 다 (아래). 창은 15분이 되고, 이 상한은 "사람을 얼마나
+ *   기다리게 할 것인가" 만 정한다.
  */
 export const REGRANT_TIMEOUT_MS = 2_500;
 
@@ -188,6 +191,14 @@ export function createLinkCommand(deps: LinkCommandDeps): Command {
   }
 
   return {
+    /**
+     * ★ 응답 전에 디스코드 REST 를 부를 수 있다(1번의 역할 재부여). `Command.defer` 계약대로
+     *   `true` — 조립부가 먼저 "생각 중" 을 보내 3초 창을 15분으로 늘린다. 링크 발급 경로는
+     *   DB 만 만지지만, 한 명령이 두 얼굴을 가질 수는 없다 — 어느 경로로 갈지는 실행해 봐야
+     *   안다. 비용은 클릭당 REST 1회(defer)이고, 버튼은 사람이 누르는 속도로만 온다.
+     */
+    defer: true,
+
     async execute(ctx: CommandContext): Promise<CommandReply> {
       const now = deps.clock.now();
 

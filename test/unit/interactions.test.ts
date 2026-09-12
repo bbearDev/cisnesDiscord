@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { MessageFlags, PermissionFlagsBits, type Interaction } from 'discord.js';
 
-import type { CommandReply, SlashCommand } from '../../src/discord/commands/types.js';
+import type { Command, CommandReply, SlashCommand } from '../../src/discord/commands/types.js';
 import { createInteractionRouter, DM_REJECT_MESSAGE } from '../../src/discord/interactions.js';
 
 /**
@@ -69,10 +69,17 @@ function harness(replies: { command?: CommandReply; button?: CommandReply } = {}
     definition: { name: '연동해제', description: '', dm_permission: false },
     execute: () => Promise.resolve({ ephemeral: true, content: '' }),
   };
+  // 버튼: `인증` 은 REST(역할 재부여)를 탈 수 있어 defer, `내 연동 상태` 는 DB 만 만진다
+  const deferButton: Command = { defer: true, execute: () => Promise.resolve({ ephemeral: true, content: '' }) };
+  const plainButton: Command = { execute: () => Promise.resolve({ ephemeral: true, content: '' }) };
   const route = createInteractionRouter({
     commands: new Map([
       ['인증채널', deferCmd],
       ['연동해제', plainCmd],
+    ]),
+    buttons: new Map([
+      ['cisnes:auth:link', deferButton],
+      ['cisnes:auth:status', plainButton],
     ]),
     dispatchCommand: (name, ctx) => {
       commandCalls.push({ name, ctx });
@@ -90,18 +97,34 @@ function harness(replies: { command?: CommandReply; button?: CommandReply } = {}
 
 describe('버튼', () => {
   it('★ custom_id 로 dispatchButton 에 가고, 답장은 ephemeral 한 번 + components 그대로', async () => {
-    const h = harness({ button: { ephemeral: true, content: '링크', components: ROW } });
-    const f = fakeInteraction({ kind: 'button', customId: 'cisnes:auth:link', operator: false });
+    const h = harness({ button: { ephemeral: true, content: '상태', components: ROW } });
+    const f = fakeInteraction({ kind: 'button', customId: 'cisnes:auth:status', operator: false });
     await h.route(f.interaction);
 
     expect(h.buttonCalls).toEqual([
-      { id: 'cisnes:auth:link', ctx: { guildId: GUILD, userId: 'user-1', isOperator: false } },
+      { id: 'cisnes:auth:status', ctx: { guildId: GUILD, userId: 'user-1', isOperator: false } },
     ]);
     expect(h.commandCalls).toHaveLength(0);
     expect(f.reply).toHaveBeenCalledTimes(1);
-    expect(f.reply).toHaveBeenCalledWith({ content: '링크', components: ROW, flags: MessageFlags.Ephemeral });
+    expect(f.reply).toHaveBeenCalledWith({ content: '상태', components: ROW, flags: MessageFlags.Ephemeral });
     expect(f.deferReply).not.toHaveBeenCalled();
     expect(f.editReply).not.toHaveBeenCalled();
+  });
+
+  it('★★ defer 버튼(인증)은 deferReply(ephemeral) → editReply 한 쌍 — REST(역할 재부여)가 3초 창을 넘겨도 답한다', async () => {
+    const h = harness({ button: { ephemeral: true, content: '링크', components: ROW } });
+    const f = fakeInteraction({ kind: 'button', customId: 'cisnes:auth:link' });
+    await h.route(f.interaction);
+
+    expect(f.deferReply).toHaveBeenCalledTimes(1);
+    expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(f.editReply).toHaveBeenCalledTimes(1);
+    expect(f.editReply).toHaveBeenCalledWith({ content: '링크', components: ROW });
+    expect(f.reply).not.toHaveBeenCalled();
+    // defer 가 dispatch 보다 먼저다
+    const deferAt = f.deferReply.mock.invocationCallOrder[0] ?? Infinity;
+    const editAt = f.editReply.mock.invocationCallOrder[0] ?? -1;
+    expect(deferAt).toBeLessThan(editAt);
   });
 
   it('components 가 없으면 키 자체를 싣지 않는다', async () => {
@@ -109,6 +132,15 @@ describe('버튼', () => {
     const f = fakeInteraction({ kind: 'button', customId: 'cisnes:auth:status' });
     await h.route(f.interaction);
     expect(f.reply).toHaveBeenCalledWith({ content: 'btn:cisnes:auth:status', flags: MessageFlags.Ephemeral });
+  });
+
+  it('모르는 custom_id 는 defer 없이 reply 한 번 — 옛 패널 안내', async () => {
+    const h = harness();
+    const f = fakeInteraction({ kind: 'button', customId: 'cisnes:auth:old' });
+    await h.route(f.interaction);
+    expect(f.deferReply).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledTimes(1);
+    expect(h.buttonCalls[0]?.id).toBe('cisnes:auth:old');
   });
 
   it('memberPermissions 가 없으면 운영자가 아니다', async () => {

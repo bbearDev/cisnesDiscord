@@ -145,10 +145,11 @@ if (interaction.isButton()) {
   메시지의 것만** 우리에게 오므로, 모르는 id 는 다른 봇이 아니라 **옛 버전 패널**의 버튼이다. 응답하지 않으면
   사용자는 "상호작용 실패" 만 본다 — `dispatchCommand` 의 '알 수 없는 명령입니다' 와 같은 규율.
 - `dispatchCommand` 와 같은 모양의 `dispatchButton` 을 `App` 에 노출한다 (테스트 주입점).
-- 버튼도 **3초 응답 제한**이 같다. 상태 조회는 DB 만 만진다. 인증 버튼은 상류(치지직) 호출이 0 이지만
-  **역할 재부여(결정 4)는 디스코드 REST 1회**를 부르므로 `REGRANT_TIMEOUT_MS`(2.5초) 로 끊는다 — 넘기면
-  `timeout` 실패로 접혀 안내가 제때 나간다. 슬래시 쪽은 `Command.defer === true` 인 명령(`/인증채널`)만
-  `deferReply` → `editReply` 로 간다. 상호작용 접기는 `discord/interactions.ts` 가 하고 단위 테스트가 잡는다.
+- 버튼도 **3초 응답 제한**이 같다. `Command.defer` 계약은 **버튼과 슬래시에 똑같이** 적용된다 —
+  `defer: true` 면 진입 수단과 무관하게 `deferReply` → `editReply`. `/인증채널`(패널 게시)과 **`인증` 버튼**
+  (역할 재부여로 `addRole` 을 부를 수 있다. `REGRANT_TIMEOUT_MS` 2.5초 + 답장 왕복이면 3초 창이 남지 않는다 —
+  PR #8 리뷰)이 그것이고, `내 연동 상태`·`/연동해제`·`/연동상태` 는 DB 만 만져 `reply` 한 번이다.
+  상호작용 접기는 `discord/interactions.ts` 가 하고 단위 테스트가 잡는다.
 
 ### D-5 `/인증` 답장 — `commands/link.ts` · `commands/types.ts`
 
