@@ -1019,6 +1019,8 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     clock,
     intervalMs: file.live.apiPollIntervalMin * 60_000,
     silenceWatch,
+    // ★ 낯선 채널 경보는 재기동을 넘어 한 번만 — 메모리에만 두면 배포마다 아이곰으로 울린다.
+    unknownChannelMemory: runtimeState,
     onEvent: (e) => {
       // ★ 낯선 채널은 chzzkbot 이 서빙 중인 채널이다 — AD-1 보호 목록에 더한다.
       if (e.type === 'unknown-channel' && e.channelIds !== undefined) {

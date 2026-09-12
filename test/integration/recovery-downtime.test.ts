@@ -321,13 +321,14 @@ describe('유튜브 복구 — 지나간 이벤트라 생략 대상이다', () =
     expect(r.kind === 'backfilled' && r.skipped).toEqual(['V2']);
   });
 
-  it('★ 피드 상한에 닿으면 그 너머를 못 봤다고 기록한다 — 누락이 스스로를 숨기지 않게', async () => {
+  const many = Array.from({ length: 15 }, (_, i) => ({
+    videoId: `V${String(i)}`,
+    channelId: 'UC1',
+    publishedAt: `2026-09-06T${String(i).padStart(2, '0')}:00:00Z`,
+  }));
+
+  it('★ 피드 상한에 닿았고 전부 새 영상이면 그 너머를 못 봤다고 기록한다 — 누락이 스스로를 숨기지 않게', async () => {
     const { repo } = freshLedger();
-    const many = Array.from({ length: 15 }, (_, i) => ({
-      videoId: `V${String(i)}`,
-      channelId: 'UC1',
-      publishedAt: `2026-09-06T${String(i).padStart(2, '0')}:00:00Z`,
-    }));
     const recordSkip = vi.fn();
     await recoverYoutube({
       window: measureDowntime(Date.parse(AT) - 5 * HOUR, Date.parse(AT)),
@@ -339,6 +340,39 @@ describe('유튜브 복구 — 지나간 이벤트라 생략 대상이다', () =
     });
     expect(recordSkip).toHaveBeenCalledTimes(1);
     expect(recordSkip.mock.calls[0]?.[0]).toContain('상한');
+  });
+
+  it('★★ 상한 15건이어도 원장이 하나라도 아는 영상이 있으면 기록하지 않는다 — 피드는 항상 15건이다', async () => {
+    // 유튜브 RSS 는 영상이 15개 이상인 채널이면 언제나 15건을 준다. 그래서 "15건 받았다" 는
+    // 재기동마다 참이고, 그것만으로 경보하면 매번 울린다 (운영 관측 2026-09-12).
+    // 원장이 아는 영상이 하나라도 있으면 피드가 마지막 공지 이전까지 닿은 것이다.
+    const { repo } = freshLedger();
+    repo.claim('youtube_upload', 'V14', AT, 'websub'); // 가장 최근 1건은 이미 공지했다
+    const recordSkip = vi.fn();
+    const r = await recoverYoutube({
+      window: measureDowntime(Date.parse(AT) - 5 * HOUR, Date.parse(AT)),
+      videos: many,
+      ledger: repo,
+      announce: () => Promise.resolve(),
+      at: AT,
+      recordSkip,
+    });
+    expect(r.kind === 'backfilled' && r.skipped).toEqual(['V14']);
+    expect(recordSkip).not.toHaveBeenCalled();
+  });
+
+  it('15건 미만이면 피드가 채널 전체라 기록하지 않는다', async () => {
+    const { repo } = freshLedger();
+    const recordSkip = vi.fn();
+    await recoverYoutube({
+      window: measureDowntime(Date.parse(AT) - 5 * HOUR, Date.parse(AT)),
+      videos: many.slice(0, 14),
+      ledger: repo,
+      announce: () => Promise.resolve(),
+      at: AT,
+      recordSkip,
+    });
+    expect(recordSkip).not.toHaveBeenCalled();
   });
 
   it('표식이 없는 첫 기동은 생략 쪽으로 간다 — 과거 영상을 도배하지 않는다', async () => {
