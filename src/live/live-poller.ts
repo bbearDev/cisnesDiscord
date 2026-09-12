@@ -3,6 +3,7 @@
 import type { LiveApiClient } from '../chzzk/live-api-client.js';
 import type { OpsAlertService } from '../runtime/alerts/ops-alert-service.js';
 import type { Clock, Disposable } from '../runtime/clock.js';
+import type { RuntimeStateStore } from '../runtime/liveness-stamp.js';
 import {
   jobFromPoll,
   type LiveAnnounceFn,
@@ -62,6 +63,27 @@ export interface LivePollEvent {
   channelIds?: readonly string[];
 }
 
+/**
+ * `runtime_state` 키 — 이미 경보한 낯선 채널 목록 (JSON 문자열 배열).
+ *
+ * ★ 재기동을 넘어 기억해야 한다. 메모리에만 두면 chzzkbot 이 상시 서빙하는 채널(아이곰)이
+ *   **재시작마다** "처음 보입니다" 로 울린다 — 운영 관측 2026-09-12. 이 경보가 잡아야 할 것은
+ *   *"설정에 없는 채널이 새로 나타났다"* 이고, 그 신호는 매번 반복되는 같은 사실에 묻힌다.
+ */
+export const UNKNOWN_CHANNELS_SEEN_KEY = 'live_unknown_channels_seen';
+
+/** 저장된 목록을 읽는다. 없거나 깨졌으면 빈 목록 — 그러면 한 번 더 울릴 뿐이다 */
+export function readSeenUnknownChannels(store: RuntimeStateStore): string[] {
+  try {
+    const raw = store.get(UNKNOWN_CHANNELS_SEEN_KEY);
+    if (raw === undefined || raw === '') return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string' && v !== '') : [];
+  } catch {
+    return [];
+  }
+}
+
 export interface LivePollerOptions {
   client: LiveApiClient;
   /** `live.channelId`. 경보 스코프 키이자 stuck-watch 의 scopeKey 다 */
@@ -76,6 +98,11 @@ export interface LivePollerOptions {
   intervalMs: number;
   /** AC-P6. 폴링이 선점했을 때만 유예창이 걸린다 */
   silenceWatch?: { noteClaim(liveHash: string): void };
+  /**
+   * 이미 경보한 낯선 채널을 재기동 너머로 기억할 곳 (`UNKNOWN_CHANNELS_SEEN_KEY`).
+   * 없으면 메모리만 쓴다 — 그러면 재기동마다 다시 울린다.
+   */
+  unknownChannelMemory?: RuntimeStateStore;
   onEvent?: (e: LivePollEvent) => void;
 }
 
@@ -92,15 +119,44 @@ export function createLivePoller(opts: LivePollerOptions): LivePoller {
   const { clock, stuckWatch, alerts } = opts;
 
   /**
-   * 이미 경보한 낯선 채널.
+   * 이미 경보한 낯선 채널 — **재기동을 넘어** 기억한다 (`unknownChannelMemory`).
    *
    * ★★ **매 폴마다 경보하지 않는다.** 실측상 chzzkbot 은 아이곰 채널을 상시
    *   서빙 중이므로, 관측할 때마다 울리면 3분마다(디바운스가 있어도 30분마다)
    *   같은 사실이 반복되고 그 소음이 진짜 신호를 덮는다.
    *   보호 목록 (b) 가 잡아야 하는 것은 *"설정에 없는 채널이 **나타났다**"* 이므로
-   *   **처음 본 채널에만** 발화한다. 재기동하면 다시 한 번 확인시켜 준다.
+   *   **처음 본 채널에만** 발화한다.
+   *
+   * ★ 예전에는 메모리에만 두고 *"재기동하면 다시 한 번 확인시켜 준다"* 고 했는데, 그 결과가
+   *   배포할 때마다 같은 채널로 울리는 경보였다. "새로 나타났다" 는 프로세스 생애가 아니라
+   *   **배포 이력** 기준이어야 한다.
    */
-  const alertedUnknownChannels = new Set<string>();
+  const alertedUnknownChannels = new Set<string>(
+    opts.unknownChannelMemory === undefined ? [] : readSeenUnknownChannels(opts.unknownChannelMemory),
+  );
+
+  /**
+   * 이 프로세스에서 `unknown-channel` 이벤트를 낸 채널.
+   *
+   * ★ 경보와 **따로** 센다. 이벤트는 조립부가 AD-1 보호 목록을 채우는 데 쓰므로(`main.ts`),
+   *   재기동 뒤 기동 조회가 실패했을 때 폴러가 처음 보는 채널을 알려 줘야 한다 —
+   *   경보를 재기동 너머로 눌렀다고 그 배선까지 끊기면 revoke 가 남의 토큰을 죽인다.
+   */
+  const emittedUnknownChannels = new Set<string>();
+
+  function rememberAlerted(ids: readonly string[]): void {
+    for (const id of ids) alertedUnknownChannels.add(id);
+    if (opts.unknownChannelMemory === undefined) return;
+    try {
+      opts.unknownChannelMemory.set(
+        UNKNOWN_CHANNELS_SEEN_KEY,
+        JSON.stringify([...alertedUnknownChannels].sort()),
+        clock.date().toISOString(),
+      );
+    } catch {
+      /* 기록 실패는 다음 재기동에 한 번 더 울리는 것으로 끝난다 — 폴링을 죽이지 않는다 */
+    }
+  }
 
   /** ★ 재진입 가드. 무응답 소켓이 3초 타임아웃에 걸리는 동안 다음 틱이 오면 겹친다 */
   let inFlight = false;
@@ -168,20 +224,31 @@ export function createLivePoller(opts: LivePollerOptions): LivePoller {
           ...(res.detail === undefined ? {} : { detail: res.detail }),
         });
       } else {
-        const fresh = res.unknownChannelIds.filter((id) => !alertedUnknownChannels.has(id));
+        // 이벤트는 프로세스마다 한 번(보호 목록용), 경보는 배포 이력상 한 번 (위 머리말).
+        const fresh = res.unknownChannelIds.filter((id) => !emittedUnknownChannels.has(id));
         if (fresh.length > 0) {
-          for (const id of fresh) alertedUnknownChannels.add(id);
+          for (const id of fresh) emittedUnknownChannels.add(id);
           emit({ type: 'unknown-channel', channelIds: fresh });
+        }
+        const unalerted = fresh.filter((id) => !alertedUnknownChannels.has(id));
+        if (unalerted.length > 0) {
           // ★ 무필터 폴링이라야 이 경보가 성립한다 (§5.2-c 보호 목록 (b)).
           //   `?channel=` 을 붙이면 응답에 우리 채널만 와서 이 줄이 영영 안 돈다.
-          await alerts.raise(
+          const outcome = await alerts.raise(
             'unknown_channel',
             '설정에 없는 채널이 GET /api/live 응답에 처음 보입니다: ' +
-              `${fresh.join(', ')}\n` +
+              `${unalerted.join(', ')}\n` +
               `우리 대상은 ${opts.channelId} 하나입니다. 공지는 그 채널만 갑니다.\n` +
               'LIVE_API_TOKEN 은 chzzkbot 에 등록된 모든 채널을 여는 운영자 토큰이므로, ' +
               '거르는 책임은 우리에게 있습니다.',
           );
+          // ★★ **실제로 나갔을 때만** "울렸다" 로 기록한다. `suppressed`(디바운스) · `disabled` ·
+          //   `skipped-no-url` · `failed` 는 운영자에게 아무것도 닿지 않은 것인데, 그때도 기록하면
+          //   그 채널은 재기동을 넘어 **영영** 울리지 않는다 — 이 기록이 영속이라 메모리 시절에
+          //   있던 "다음 재기동에 저절로 복구" 도 없다. 특히 낯선 채널 둘이 디바운스 창 안에
+          //   나타나면 둘째가 조용히 묻힌다 (PR #9 리뷰). 못 보낸 것은 다음 재기동에 한 번 더
+          //   기회를 얻는다 — 이 프로세스 안에서는 `emittedUnknownChannels` 가 재시도를 막는다.
+          if (outcome === 'sent') rememberAlerted(unalerted);
         }
         judgment =
           res.target === undefined

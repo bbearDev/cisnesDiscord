@@ -237,8 +237,12 @@ export async function recoverYoutube(deps: YoutubeRecoveryDeps): Promise<Youtube
     announced.push(v.videoId);
   }
 
-  // ★ 피드 상한에 닿았으면 그 너머는 볼 수 없었다. 기록만 남긴다.
-  if (deps.videos.length >= limit) {
+  // ★★ 피드 상한에 닿았고 **원장이 하나도 모르는 영상뿐**이었으면 그 너머는 볼 수 없었다.
+  //   `videos.length >= limit` 만으로 판정하면 안 된다 — 유튜브 RSS 는 영상이 15개 이상인
+  //   채널이면 **언제나 정확히 15건**을 주므로, 그 조건은 재기동마다 참이고 경보가 매번
+  //   울려 진짜 신호를 덮는다 (운영 관측 2026-09-12). 원장이 하나라도 아는 영상이 있었다면
+  //   피드는 마지막 공지 시점보다 더 과거까지 닿은 것이고, 그 사이에 빠진 것은 없다.
+  if (deps.videos.length >= limit && skipped.length === 0) {
     deps.recordSkip?.(
       `RSS 피드 상한(${String(limit)}건)에 닿았습니다 — 그보다 오래된 업로드는 확인할 수 없어 누락됐을 수 있습니다.`,
     );

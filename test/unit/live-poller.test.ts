@@ -7,9 +7,16 @@ import {
   type LiveApiFetchResult,
 } from '../../src/chzzk/live-api-client.js';
 import type { LiveAnnounceJob, LiveLedger, LiveSessionStore } from '../../src/live/live-announce.js';
-import { createLivePoller, type LivePoller } from '../../src/live/live-poller.js';
+import {
+  createLivePoller,
+  readSeenUnknownChannels,
+  UNKNOWN_CHANNELS_SEEN_KEY,
+  type LivePollEvent,
+  type LivePoller,
+} from '../../src/live/live-poller.js';
 import { buildSpecs, createStuckWatch, type StuckWatch } from '../../src/live/stuck-watch.js';
 import { ManualClock } from '../../src/runtime/clock.js';
+import type { RuntimeStateStore } from '../../src/runtime/liveness-stamp.js';
 import { createFakeOpsAlerts, type FakeOpsAlerts } from '../helpers/ops-alerts.js';
 import { loadJsonFixture } from '../e2e/harness/fake-chzzkbot.js';
 
@@ -343,6 +350,139 @@ describe('★★ 채널 필터 — 남의 방송을 우리 서버에 공지하�
     }
     expect(alerts.countOf('unknown_channel')).toBe(1);
     expect(alerts.raised[0]!.message).toContain(FOREIGN);
+  });
+
+  /**
+   * ★★ 재기동을 넘어 한 번만 — 메모리에만 두면 배포마다 아이곰으로 울린다 (운영 관측 2026-09-12).
+   *
+   * 같은 `RuntimeStateStore` 로 폴러를 다시 만드는 것이 곧 재기동이다.
+   */
+  describe('★★ unknown_channel 은 재기동을 넘어 한 번만 — runtime_state 가 기억한다', () => {
+    function memoryStore(): RuntimeStateStore & { rows: Map<string, string> } {
+      const rows = new Map<string, string>();
+      return {
+        rows,
+        get: (k) => rows.get(k),
+        set: (k, v) => {
+          rows.set(k, v);
+        },
+      };
+    }
+
+    /** `build()` 와 같은 폴러를 저장소·이벤트 수집기만 더해 만든다 */
+    function boot(store: RuntimeStateStore, initial: LiveApiFetchResult): { p: LivePoller; events: LivePollEvent[] } {
+      build(initial);
+      const events: LivePollEvent[] = [];
+      const p = createLivePoller({
+        client,
+        channelId: OURS,
+        ledger: ledger.repo,
+        sessions,
+        announce: () => Promise.resolve(),
+        stuckWatch,
+        alerts: alerts.service,
+        clock,
+        intervalMs: POLL_MS,
+        unknownChannelMemory: store,
+        onEvent: (e) => events.push(e),
+      });
+      return { p, events };
+    }
+
+    it('첫 기동: 경보 1건 + 이벤트 1건, 목록이 저장된다', async () => {
+      const store = memoryStore();
+      const { p, events } = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      await p.poll();
+      await p.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+      expect(events.filter((e) => e.type === 'unknown-channel')).toHaveLength(1);
+      expect(readSeenUnknownChannels(store)).toEqual([FOREIGN]);
+    });
+
+    it('★★ 재기동: 경보 0건 — 그러나 이벤트는 다시 1건 (AD-1 보호 목록은 프로세스마다 채워야 한다)', async () => {
+      const store = memoryStore();
+      const first = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      await first.p.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+
+      // 재기동 — 새 프로세스, 같은 DB
+      const second = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      for (let i = 0; i < 5; i++) await second.p.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(0); // build() 가 alerts 를 새로 만들었다
+      const evs = second.events.filter((e) => e.type === 'unknown-channel');
+      expect(evs).toHaveLength(1);
+      expect(evs[0]?.channelIds).toEqual([FOREIGN]);
+    });
+
+    it('★ 재기동 뒤 정말 새 채널이 나타나면 그 채널로만 경보한다', async () => {
+      const store = memoryStore();
+      store.set(UNKNOWN_CHANNELS_SEEN_KEY, JSON.stringify([FOREIGN]), '');
+      const response = LiveApiResponseSchema.parse(loadJsonFixture('chzzkbot/api-live-2channels-idle.json'));
+      const NEWCOMER = 'ffff0000ffff0000ffff0000ffff0000';
+      const { p } = boot(store, {
+        ok: true,
+        response,
+        target: response.channels.find((c) => c.channelId === OURS),
+        unknownChannelIds: [FOREIGN, NEWCOMER],
+      });
+      await p.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+      expect(alerts.raised[0]!.message).toContain(NEWCOMER);
+      expect(alerts.raised[0]!.message).not.toContain(FOREIGN);
+      expect(readSeenUnknownChannels(store)).toEqual([NEWCOMER, FOREIGN].sort());
+    });
+
+    it('★★ 경보가 실제로 나가지 않았으면(suppressed 등) 기록하지 않는다 — 다음 재기동에 다시 기회를 얻는다', async () => {
+      // 실제 서비스는 디바운스·설정 꺼짐·웹훅 미설정·발송 실패를 값으로 돌려준다. 그 넷은
+      // 운영자에게 아무것도 닿지 않은 것이라, 그때 "울렸다" 로 영속 기록하면 그 채널은
+      // 영영 묻힌다 — 특히 낯선 채널 둘이 디바운스 창 안에 나타나면 둘째가 그렇게 된다.
+      for (const outcome of ['suppressed', 'disabled', 'skipped-no-url', 'failed'] as const) {
+        const store = memoryStore();
+        const first = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+        alerts.setOutcome(outcome);
+        await first.p.poll();
+        await first.p.poll(); // 같은 프로세스 안에서는 재시도하지 않는다
+        expect(alerts.countOf('unknown_channel'), outcome).toBe(1);
+        expect(readSeenUnknownChannels(store), outcome).toEqual([]);
+
+        // 재기동 — 이번엔 나간다 → 그제야 기록된다
+        const second = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+        await second.p.poll();
+        expect(alerts.countOf('unknown_channel'), outcome).toBe(1);
+        expect(readSeenUnknownChannels(store), outcome).toEqual([FOREIGN]);
+      }
+    });
+
+    it('저장값이 깨졌으면 빈 목록으로 본다 — 한 번 더 울릴 뿐 폴링은 산다', async () => {
+      const store = memoryStore();
+      store.set(UNKNOWN_CHANNELS_SEEN_KEY, '{oops', '');
+      expect(readSeenUnknownChannels(store)).toEqual([]);
+      store.set(UNKNOWN_CHANNELS_SEEN_KEY, JSON.stringify([1, '', 'x']), '');
+      expect(readSeenUnknownChannels(store)).toEqual(['x']);
+      const { p } = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      await p.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+    });
+
+    it('저장이 실패해도 폴링은 산다', async () => {
+      const store = memoryStore();
+      store.set = () => {
+        throw new Error('disk full');
+      };
+      const { p } = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      const tick = await p.poll();
+      expect(tick.outcome).toBe('ran');
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+    });
+
+    it('저장소를 주지 않으면 예전처럼 메모리만 — 재기동마다 다시 울린다', async () => {
+      build(fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      await poller.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+      build(fromFixture('chzzkbot/api-live-2channels-idle.json'));
+      await poller.poll();
+      expect(alerts.countOf('unknown_channel')).toBe(1);
+    });
   });
 
   it('우리 채널만 판정한다 — 남의 채널은 announce 여도 우리 결론을 바꾸지 않는다', async () => {

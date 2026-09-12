@@ -16,6 +16,8 @@ import {
 import { createFakeChzzkbot } from '../e2e/harness/fake-chzzkbot.js';
 import { createFakeDiscord } from '../e2e/harness/fake-discord.js';
 import { GATE_CHANNEL_COMMAND_NAME } from '../../src/discord/commands/gate-channel.js';
+import { UNKNOWN_CHANNELS_SEEN_KEY } from '../../src/live/live-poller.js';
+import { createRuntimeStateRepo } from '../../src/store/repos/runtime-state-repo.js';
 import {
   AUTH_PANEL_BUTTON_LINK,
   AUTH_PANEL_BUTTON_STATUS,
@@ -239,6 +241,35 @@ describe('AD-1 보호 목록', () => {
     // 아이곰은 우리 대상이 아니지만 chzzkbot 이 서빙 중이다 —
     // 그 채널의 토큰을 revoke 하면 상류 팔로워 검증이 통째로 멈춘다.
     expect([...app.protectedChannelIds].sort()).toEqual([AIGOM, SIS].sort());
+  });
+
+  it('★★ 낯선 채널 경보는 재기동을 넘어 한 번만 — 첫 기동은 울리고 runtime_state 에 남긴다', async () => {
+    const { app, alertEvents } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    await app.start(); // 기동 직후 1회 폴
+    await vi.waitFor(() => {
+      expect(alertEvents.filter((e) => e.kind === 'unknown_channel')).toHaveLength(1);
+    });
+    expect(JSON.parse(app.runtimeState.get(UNKNOWN_CHANNELS_SEEN_KEY) ?? '[]')).toEqual([AIGOM]);
+  });
+
+  it('★★ 재기동(같은 DB)에서는 울리지 않는다 — 그래도 보호 목록에는 들어간다', async () => {
+    const { app, alertEvents } = await boot(
+      (u) => {
+        u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+      },
+      {
+        // 지난 기동이 남긴 기록 — 이것이 "재기동" 이다
+        seed: (db) => {
+          createRuntimeStateRepo(db).set(UNKNOWN_CHANNELS_SEEN_KEY, JSON.stringify([AIGOM]), new Date().toISOString());
+        },
+      },
+    );
+    await app.start();
+    await app.livePoller.poll();
+    expect(alertEvents.filter((e) => e.kind === 'unknown_channel')).toHaveLength(0);
+    expect([...app.protectedChannelIds]).toEqual([SIS, AIGOM]);
   });
 
   it('조회가 실패하면 우리 채널만 남는다 (모르는 것을 목록에 넣지 않는다)', async () => {

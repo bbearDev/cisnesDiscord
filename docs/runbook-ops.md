@@ -409,6 +409,8 @@ sqlite3 data/cisnes.db "SELECT gate_channel_id FROM guild_config; SELECT value F
 | **AC-P6** 웹훅 침묵 | 폴링이 공지했는데 같은 방송의 웹훅 기록이 없다 → **웹훅 경로가 고장** | chzzkbot `LIVE_EVENT_WEBHOOK_URL` 값 · 우리 8081 도달성 |
 | **AC-P7** 리스 잔량/갱신 실패 | WebSub 구독이 만료되어 간다 | 이그레스 확인 후 수동 재구독 |
 | 워치독: 하트비트 90분 | 프로세스는 살아 있는데 일을 안 한다 | `systemctl --user status` · 이벤트 루프 블로킹 의심 |
+| `unknown_channel` 설정에 없는 채널 | `GET /api/live` 응답에 우리 채널 말고 다른 채널이 **처음** 보였다 (chzzkbot 이 그 채널도 서빙 중) | 그 채널이 의도된 것인지(§8-b 아이곰) 확인. 공지는 우리 채널만 간다. **재기동에는 다시 울리지 않는다** — 본 목록을 `runtime_state.live_unknown_channels_seen` 에 남긴다. 정말 새 채널이 나타났을 때만 그 채널로 울린다 |
+| `downtime_detected` RSS 피드 상한 | 기동 복구가 받은 RSS 15건이 **전부 원장에 없던 새 영상**이라 그보다 오래된 업로드를 못 봤을 수 있다 | 유튜브 채널 페이지에서 15번째보다 오래된 영상 중 공지 누락이 있는지 눈으로 확인. 원장이 하나라도 아는 영상이 있었으면 이 경보는 나지 않는다 (피드는 항상 15건이라 그 사실만으로는 울리지 않는다) |
 
 > ★ **`live_detected_via{api-poll}` 비율과 `youtube_detected_via{rss}` 비율에는 경보를 걸지 않는다.**
 > 이벤트가 하루 0~2건이라 분모가 없어 1건만 폴백이어도 50% 가 된다. **주간 추세 확인용 지표**이고,
