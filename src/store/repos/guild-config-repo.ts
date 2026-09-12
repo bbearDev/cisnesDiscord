@@ -24,7 +24,7 @@ export interface GuildConfigRow {
   guildId: string;
   /** 인증 완료 시 부여할 역할 */
   verifiedRoleId?: string | undefined;
-  /** `/인증` 안내가 놓이는 게이트 채널 */
+  /** 인증 패널(임베드 + 버튼)이 놓이는 게이트 채널. `/인증채널` 이 채운다 */
   gateChannelId?: string | undefined;
   /** 방송 시작 공지 */
   liveChannelId?: string | undefined;

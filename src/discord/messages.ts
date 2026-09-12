@@ -4,11 +4,12 @@ import {
   type FollowerUnknownReason,
 } from '../chzzk/follower-check.js';
 import type { GateOutcome } from './gate.js';
+import { AUTH_PANEL_LINK_LABEL } from './panel.js';
 
 /**
  * 사람에게 나가는 문안 — **R-4(정직한 안내)** 의 구현체 (계획 §5.2).
  *
- * ★ 여기 한 곳에 모으는 이유. 같은 판정이 **디스코드 답장**(`/인증`, `/연동상태`)과
+ * ★ 여기 한 곳에 모으는 이유. 같은 판정이 **디스코드 답장**(패널 버튼, `/연동상태`)과
  *   **브라우저 콜백 페이지** 두 곳에 나간다. 문안을 두 곳에 적으면 한쪽만 고쳐지고,
  *   그때 갈라지는 것이 하필 *"스냅샷 시각과 다음 재시도 시각을 둘 다 싣는다"*
  *   라는 R-4 요건이다.
@@ -119,7 +120,7 @@ export function unknownMessage(lookup: FollowerLookup, now: number): string {
     snapshotLine(lookup),
     `· 다시 시도 가능한 시각: ${formatKst(nextRetryAt(lookup, now))}`,
     '',
-    '잠시 후 `/인증` 을 다시 실행해 주십시오. 계속 같은 안내가 나오면 운영자에게 알려 주십시오.',
+    `잠시 후 **${AUTH_PANEL_LINK_LABEL}** 버튼을 다시 눌러 주십시오. 계속 같은 안내가 나오면 운영자에게 알려 주십시오.`,
   ].join('\n');
 }
 
@@ -156,19 +157,38 @@ export function duplicateChannelMessage(channelName: string): string {
   ].join('\n');
 }
 
+/**
+ * 역할 부여 실패. 연동 행은 이미 있다.
+ *
+ * ★ "버튼을 다시 누르면 역할만 부여된다" 는 약속은 `commands/link.ts` 의 1번 분기가 지킨다 —
+ *   이미 연동된 사람에게 역할이 없으면 게이트만 다시 적용한다. 문안이 코드보다 앞서면 안 된다.
+ */
 export function gateFailedMessage(gate: GateOutcome): string {
   const role = gate.failures.find((f) => f.part === 'role');
   const why =
     role?.kind === 'forbidden'
       ? '봇에게 역할을 부여할 권한이 없습니다(봇 역할이 대상 역할보다 아래에 있는지 확인이 필요합니다).'
       : '역할을 부여하지 못했습니다.';
-  return `${why} 운영자에게 알려 주십시오. 연동 자체는 저장돼 있어 다시 \`/인증\` 하시면 역할만 부여됩니다.`;
+  return `${why} 운영자에게 알려 주십시오. 연동은 저장돼 있으니 원인이 해결된 뒤 **${AUTH_PANEL_LINK_LABEL}** 버튼을 다시 누르시면 역할만 부여됩니다.`;
+}
+
+/**
+ * 이미 연동된 사람에게 역할만 다시 붙였다 (`commands/link.ts` 1번 ★★).
+ *
+ * @param knownMissing 캐시가 "역할이 없다" 를 **확실히** 알았는가. 몰랐으면(캐시 미스) 부여는
+ *   멱등 호출이라 "빠져 있던" 이라고 단정하지 않는다.
+ */
+export function roleRegrantedMessage(channelName: string, knownMissing: boolean): string {
+  return [
+    `치지직 채널 **${channelName}** 로 이미 인증돼 있습니다.`,
+    knownMissing ? '· 빠져 있던 역할을 다시 부여했습니다.' : '· 역할을 확인해 부여했습니다.',
+  ].join('\n');
 }
 
 export function exchangeFailedMessage(): string {
   return [
     '치지직 인증을 완료하지 못했습니다.',
-    '인가 코드는 1회용이라 이미 사용됐을 수 있습니다. `/인증` 을 처음부터 다시 실행해 주십시오.',
+    `인가 코드는 1회용이라 이미 사용됐을 수 있습니다. 디스코드에서 **${AUTH_PANEL_LINK_LABEL}** 버튼을 다시 눌러 처음부터 진행해 주십시오.`,
   ].join('\n');
 }
 
@@ -176,8 +196,13 @@ export function badStateMessage(): string {
   return [
     '인증 요청을 확인하지 못했습니다.',
     '브라우저를 열어둔 채 오래 두었거나, 다른 창에서 시작한 인증일 수 있습니다.',
-    '`/인증` 을 처음부터 다시 실행해 주십시오.',
+    `디스코드에서 **${AUTH_PANEL_LINK_LABEL}** 버튼을 다시 눌러 처음부터 진행해 주십시오.`,
   ].join('\n');
+}
+
+/** 우리 앱 메시지의 버튼인데 지금 코드가 모르는 `custom_id` — 옛 버전 패널이다 */
+export function unknownButtonMessage(): string {
+  return '이 버튼은 더 이상 쓰이지 않습니다. 게이트 채널의 최신 인증 패널을 이용해 주십시오.';
 }
 
 export function cooldownMessage(retryAfterSec: number): string {

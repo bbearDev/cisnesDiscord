@@ -15,6 +15,12 @@ import {
 } from '../../src/main.js';
 import { createFakeChzzkbot } from '../e2e/harness/fake-chzzkbot.js';
 import { createFakeDiscord } from '../e2e/harness/fake-discord.js';
+import { GATE_CHANNEL_COMMAND_NAME } from '../../src/discord/commands/gate-channel.js';
+import {
+  AUTH_PANEL_BUTTON_LINK,
+  AUTH_PANEL_BUTTON_STATUS,
+  AUTH_PANEL_STATE_KEY,
+} from '../../src/discord/panel.js';
 import { CHZZKBOT_WEBHOOK_PATH } from '../../src/web/routes/chzzkbot-webhook.js';
 import {
   OAUTH_CALLBACK_PATH,
@@ -31,6 +37,7 @@ import {
   API_TOKEN,
   ATOM_FEED,
   ENV,
+  GATE_CHANNEL,
   GUILD,
   LIVE_CHANNEL,
   SIS,
@@ -276,13 +283,52 @@ describe('인증 (§S4)', () => {
     ).toBe(true);
   });
 
-  it('/인증 명령이 조립돼 있고 우리 /oauth/start 로 안내한다', async () => {
+  it('★ 인증 버튼이 조립돼 있고 답장의 Link 버튼이 우리 /oauth/start 를 가리킨다', async () => {
     const { app } = await boot((u) => {
       u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
     });
-    const reply = await app.dispatchCommand('인증', { guildId: GUILD, userId: 'user-9' });
+    const reply = await app.dispatchButton(AUTH_PANEL_BUTTON_LINK, { guildId: GUILD, userId: 'user-9' });
     expect(reply.ephemeral).toBe(true);
-    expect(reply.content).toContain(`https://cisnes.example${OAUTH_START_PATH}?s=`);
+    // ★ 본문에는 URL 이 없다 — 크롤러가 가져갈 것이 없다.
+    expect(reply.content).not.toContain(OAUTH_START_PATH);
+    const button = reply.components?.[0]?.components[0];
+    expect(button !== undefined && 'url' in button ? button.url : undefined).toContain(
+      `https://cisnes.example${OAUTH_START_PATH}?s=`,
+    );
+  });
+
+  it('[내 연동 상태] 버튼은 본인 조회다', async () => {
+    const { app } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    const reply = await app.dispatchButton(AUTH_PANEL_BUTTON_STATUS, { guildId: GUILD, userId: 'user-9' });
+    expect(reply.ephemeral).toBe(true);
+    expect(reply.content).toContain('아직 연동돼 있지 않습니다');
+  });
+
+  it('모르는 custom_id 에도 답한다 — 옛 패널의 버튼', async () => {
+    const { app } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    const reply = await app.dispatchButton('cisnes:auth:old', { guildId: GUILD, userId: 'user-9' });
+    expect(reply.content).toContain('더 이상 쓰이지 않습니다');
+  });
+
+  it('★★ 슬래시로 등록되는 것은 운영자용 셋뿐이다 — `인증` 은 없다', async () => {
+    const { app } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    expect([...app.commands.keys()].sort()).toEqual(['연동상태', '연동해제', GATE_CHANNEL_COMMAND_NAME].sort());
+    expect([...app.buttons.keys()].sort()).toEqual([AUTH_PANEL_BUTTON_LINK, AUTH_PANEL_BUTTON_STATUS].sort());
+    // 운영자용 셋 전부 Manage Guild 로 노출이 막힌다
+    for (const c of app.commands.values()) {
+      expect(c.definition.default_member_permissions, c.definition.name).toBe('32');
+    }
+    // 응답 전에 REST 를 부를 수 있는 것만 defer 다 — `/인증채널`(패널 게시) · `인증` 버튼(역할 재부여)
+    expect(app.commands.get(GATE_CHANNEL_COMMAND_NAME)?.defer).toBe(true);
+    expect(app.commands.get('연동해제')?.defer).toBeUndefined();
+    expect(app.buttons.get(AUTH_PANEL_BUTTON_LINK)?.defer).toBe(true);
+    expect(app.buttons.get(AUTH_PANEL_BUTTON_STATUS)?.defer).toBeUndefined();
   });
 
   it('★ guild_config 가 없으면 인증을 진행하지 않는다 — 아무 길드나 고르지 않는다', async () => {
@@ -324,6 +370,107 @@ describe('인증 (§S4)', () => {
 // ══════════════════════════════════════════════════════════════════
 //  ⑤ 역할 캐시 조회 (AC-12 c)
 // ══════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+//  ④-b 인증 패널 — 게이트 채널의 임베드 + 버튼
+// ══════════════════════════════════════════════════════════════════
+
+describe('인증 패널 배선', () => {
+  it('★★ start() 가 게이트 채널에 패널을 1회 게시하고 위치를 runtime_state 에 남긴다', async () => {
+    const { app, fake } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    expect(fake.sent).toHaveLength(0);
+    await app.start();
+
+    const panel = fake.sent.find((m) => m.channelId === GATE_CHANNEL);
+    expect(panel, '게이트 채널에 게시된 메시지가 없다').toBeDefined();
+    const ids = panel?.payload.components?.[0]?.components.map((c) => ('custom_id' in c ? c.custom_id : '')) ?? [];
+    expect(ids).toEqual([AUTH_PANEL_BUTTON_LINK, AUTH_PANEL_BUTTON_STATUS]);
+    expect(panel?.payload.embeds?.[0]?.title).toBe('치지직 팔로워 인증');
+
+    expect(app.authPanel.current()).toEqual({ channelId: GATE_CHANNEL, messageId: panel?.messageId });
+    expect(JSON.parse(app.runtimeState.get(AUTH_PANEL_STATE_KEY) ?? '{}')).toMatchObject({
+      channelId: GATE_CHANNEL,
+    });
+  });
+
+  it('★ 재기동 — 패널이 있으면 PATCH 1회, POST 0회 (둘이 되지 않는다)', async () => {
+    const { app, fake } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    await app.start();
+    const first = app.authPanel.current();
+    expect(first).toBeDefined();
+    const sentBefore = fake.sent.length;
+
+    // 같은 DB 로 다시 "기동" 한 것과 같다 — keeper 가 저장된 위치를 읽어 PATCH 한다.
+    const again = await app.authPanel.ensure(GATE_CHANNEL);
+    expect(again.outcome).toBe('updated');
+    expect(fake.sent).toHaveLength(sentBefore);
+    expect(fake.edited).toHaveLength(1);
+    expect(fake.edited[0]?.messageId).toBe(first?.messageId);
+  });
+
+  it('★ 누가 패널을 지웠으면(404) 새로 게시하고 위치를 갱신한다', async () => {
+    const { app, fake } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    await app.start();
+    const first = app.authPanel.current();
+    fake.forgetMessage(first?.messageId ?? '');
+    const sentBefore = fake.sent.length;
+
+    const again = await app.authPanel.ensure(GATE_CHANNEL);
+    expect(again.outcome).toBe('posted');
+    expect(fake.sent).toHaveLength(sentBefore + 1);
+    expect(app.authPanel.current()?.messageId).not.toBe(first?.messageId);
+  });
+
+  it('★ /인증채널 — 운영자가 채널을 바꾸면 저장하고 그 자리에서 게시한다', async () => {
+    const { app, fake } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    await app.start();
+    const NEW_CHANNEL = '666666666666666666';
+
+    // 운영자가 아니면 거부
+    const denied = await app.dispatchCommand(GATE_CHANNEL_COMMAND_NAME, {
+      guildId: GUILD,
+      userId: 'member',
+      isOperator: false,
+      targetChannelId: NEW_CHANNEL,
+    });
+    expect(denied.content).toContain('운영자만');
+
+    const reply = await app.dispatchCommand(GATE_CHANNEL_COMMAND_NAME, {
+      guildId: GUILD,
+      userId: 'ops',
+      isOperator: true,
+      targetChannelId: NEW_CHANNEL,
+    });
+    expect(reply.content).toContain(`<#${NEW_CHANNEL}> 에 게시했습니다`);
+    // 옛 패널은 지우지 않았다는 사실을 말한다
+    expect(reply.content).toContain(`<#${GATE_CHANNEL}>`);
+
+    expect(app.guildConfig.single()?.gateChannelId).toBe(NEW_CHANNEL);
+    // 다른 컬럼은 그대로다 (COALESCE)
+    expect(app.guildConfig.single()?.verifiedRoleId).toBe(VERIFIED_ROLE);
+    expect(fake.sent.filter((m) => m.channelId === NEW_CHANNEL)).toHaveLength(1);
+    expect(app.authPanel.current()?.channelId).toBe(NEW_CHANNEL);
+  });
+
+  it('게이트 채널이 없으면 게시하지 않는다 — 기동은 된다', async () => {
+    const { app, fake } = await boot((u) => {
+      u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
+    });
+    // 하니스가 심은 gate_channel_id 를 비운다 (upsert 는 COALESCE 라 NULL 로 못 만든다)
+    app.db.prepare('UPDATE guild_config SET gate_channel_id = NULL').run();
+    await app.start();
+    expect(fake.sent.filter((m) => m.channelId === GATE_CHANNEL)).toHaveLength(0);
+    expect(app.authPanel.current()).toBeUndefined();
+  });
+});
 
 describe('hasRole — 캐시 미스는 false 가 아니다', () => {
   const source: RoleCacheSource = {

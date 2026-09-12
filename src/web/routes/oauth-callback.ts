@@ -14,6 +14,7 @@ import {
   notFollowerMessage,
   unknownMessage,
 } from '../../discord/messages.js';
+import { AUTH_PANEL_LINK_LABEL } from '../../discord/panel.js';
 import type { Clock } from '../../runtime/clock.js';
 import type { LinkRepo } from '../../store/repos/link-repo.js';
 import type { Route, RouteRequest, RouteResponse } from '../server.js';
@@ -28,12 +29,12 @@ import type { ConsumedSession, VerificationResult, VerificationSessionStore } fr
  *   §5.6.2 가 *"외부인은 토큰 교환까지 도달하지 못한다"* 라고 적을 수 있는 근거가
  *   **오직 이 순서 하나**다 — 바꾸면 무인증 공개 표면이 하나 생긴다.
  *
- * ★ 경로가 둘인 이유. `/인증` 은 디스코드 답장이라 **쿠키를 심을 수 없다.**
+ * ★ 경로가 둘인 이유. `인증` 버튼의 답장은 디스코드 메시지라 **쿠키를 심을 수 없다.**
  *   그래서 `/oauth/start` 가 사이에 서서 nonce 를 심고 치지직으로 넘긴다 —
  *   AC-3 의 그물 B 가 존재할 수 있는 유일한 자리다.
  *
- *   /인증 (디스코드)  →  /oauth/start  →  치지직 인가  →  /oauth/callback
- *        state 발급        nonce 쿠키        사용자 동의       ★ state 먼저 검증
+ *   인증 버튼 (디스코드)  →  /oauth/start  →  치지직 인가  →  /oauth/callback
+ *        state 발급           nonce 쿠키        사용자 동의       ★ state 먼저 검증
  *
  * ★ 왕복 예산 10초 (§5.6.1). 교환 + `users/me` + 팔로워 조회 3회가 이 예산을 나눠 쓴다.
  *   초과는 **실패가 아니라 `unknown`** 이다 — §3-a.
@@ -336,7 +337,7 @@ export function createOAuthCallbackRoute(deps: OAuthCallbackDeps): Route {
       return page(
         400,
         '인증이 취소됐습니다',
-        '치지직에서 동의가 완료되지 않았습니다. `/인증` 을 다시 실행해 주십시오.',
+        `치지직에서 동의가 완료되지 않았습니다. 디스코드에서 **${AUTH_PANEL_LINK_LABEL}** 버튼을 다시 눌러 주십시오.`,
         clearCookie,
       );
     }
@@ -448,7 +449,7 @@ export function createOAuthCallbackRoute(deps: OAuthCallbackDeps): Route {
         return page(
           500,
           '인증 처리 중 오류가 발생했습니다',
-          '잠시 후 `/인증` 을 다시 실행해 주십시오.',
+          `잠시 후 디스코드에서 **${AUTH_PANEL_LINK_LABEL}** 버튼을 다시 눌러 주십시오.`,
         );
       }
     },

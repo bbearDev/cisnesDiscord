@@ -146,6 +146,27 @@ describe('createDiscordGateway — 주입점', () => {
     // null 은 "닉네임 해제" 다 — undefined 로 접으면 변경 자체가 안 나간다.
     expect(stub.calls[2]?.data?.body).toEqual({ nick: null });
   });
+
+  it('★ editMessage 는 PATCH /channels/{c}/messages/{m} 이고 본문·시그널을 그대로 넘긴다 (인증 패널 갱신)', async () => {
+    const stub = stubClient(() => undefined);
+    const gw = createDiscordGateway({ token: 't', client: stub.client });
+    const ac = new AbortController();
+    const payload = { content: '패널', components: [] };
+
+    await gw.editMessage('chan-1', 'msg-9', payload, { signal: ac.signal });
+
+    expect(stub.calls[0]).toMatchObject({ verb: 'patch', route: '/channels/chan-1/messages/msg-9' });
+    expect(stub.calls[0]?.data?.body).toBe(payload);
+    expect(stub.calls[0]?.data?.signal).toBe(ac.signal);
+  });
+
+  it('★ 지워진 메시지의 404 는 status 로 실려 올라온다 — 패널 keeper 가 이 값만 본다', async () => {
+    const stub = stubClient(() => {
+      throw Object.assign(new Error('Unknown Message'), { status: 404, code: 10008 });
+    });
+    const gw = createDiscordGateway({ token: 't', client: stub.client });
+    await expect(gw.editMessage('c', 'm', {})).rejects.toMatchObject({ kind: 'unknown', status: 404 });
+  });
 });
 
 describe('createDiscordGateway — 게이트웨이 재연결 (AC-P3 (a))', () => {

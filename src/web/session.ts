@@ -17,7 +17,7 @@ import type {
  * ① **로그인 CSRF.** 콜백이 `code` 를 그대로 받아 교환하면 공격자가 자기 인가 코드를
  *    피해자 브라우저에 밀어넣을 수 있다. `state` 를 서버가 발급하고 **1회용**으로 둔다.
  *
- * ② **그것만으로는 부족하다.** 공격자도 자기 디스코드 계정으로 `/인증` 을 눌러
+ * ② **그것만으로는 부족하다.** 공격자도 자기 디스코드 계정으로 인증 버튼을 눌러
  *    **유효한 state 를 얻을 수 있다.** 그래서 그물을 둘 건다:
  *
  *    **그물 A — 발급 유저 귀속.** state 에는 `discordUserId` 가 붙어 있고,
@@ -28,7 +28,7 @@ import type {
  *    브라우저**에 있으므로 피해자 브라우저에서는 통과하지 못한다.
  *
  * ★ **nonce 원문을 저장하지 않는다.** DB 에는 sha256 해시만 남고 원문은 쿠키에만 있다
- *   (§8 스키마 주석). 그래서 `/인증` 이 돌려주는 URL 에도 nonce 가 없다 —
+ *   (§8 스키마 주석). 그래서 `인증` 이 돌려주는 URL 에도 nonce 가 없다 —
  *   nonce 는 `/oauth/start` 가 그 자리에서 만들어 심고 해시를 **회전**시킨다.
  *
  * ★ `issue()` 직후의 `nonce_hash` 는 **아무도 프리이미지를 모르는 값**이다.
@@ -90,7 +90,7 @@ export interface ConsumedSession {
   state: string;
   /** ★ 역할·연동은 **이 사람에게** 간다. 콜백을 연 브라우저의 주인이 아니다 */
   discordUserId: string;
-  /** `/인증` 을 누른 시각(epoch ms). 판정표 4 의 "클릭 시각" 이 이 값이다 */
+  /** 인증 버튼을 누른 시각(epoch ms). 판정표 4 의 "클릭 시각" 이 이 값이다 */
   clickedAt: number;
 }
 
@@ -130,7 +130,7 @@ export interface VerificationSessionStoreOptions {
 }
 
 export interface VerificationSessionStore {
-  /** `/인증` — state 발급. 발급 유저에 귀속된다 (AC-3 그물 A) */
+  /** `인증` — state 발급. 발급 유저에 귀속된다 (AC-3 그물 A) */
   issue(discordUserId: string): IssuedSession;
   /** AC-12(b) — 진행 중인 흐름. 있으면 **같은 URL 을 재제시**한다 */
   findPending(discordUserId: string): PendingSession | undefined;

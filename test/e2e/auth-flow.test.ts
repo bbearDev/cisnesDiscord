@@ -3,10 +3,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createFollowerChecker, type FollowerChecker } from '../../src/chzzk/follower-check.js';
 import { createViewerTokenClient, type ViewerTokenClient } from '../../src/chzzk/oauth/viewer-token.js';
 import { createAuthGuard, type AuthGuard } from '../../src/discord/commands/guard.js';
-import { createLinkCommand } from '../../src/discord/commands/link.js';
+import { createLinkCommand, LINK_BUTTON_LABEL } from '../../src/discord/commands/link.js';
 import { createStatusCommand } from '../../src/discord/commands/status.js';
 import { createUnlinkCommand } from '../../src/discord/commands/unlink.js';
-import type { SlashCommand } from '../../src/discord/commands/types.js';
+import type { Command, CommandReply, SlashCommand } from '../../src/discord/commands/types.js';
 import { DiscordSendError } from '../../src/discord/client.js';
 import type { GateGateway } from '../../src/discord/gate.js';
 import { ManualClock } from '../../src/runtime/clock.js';
@@ -23,13 +23,13 @@ import type { Route, RouteRequest, RouteResponse } from '../../src/web/server.js
 import { createVerificationSessionStore, type VerificationSessionStore } from '../../src/web/session.js';
 
 /**
- * ★★ S4 인증 왕복 e2e — `/인증` → `/oauth/start` → 콜백 → 팔로워 판정 → 연동·역할.
+ * ★★ S4 인증 왕복 e2e — 인증 버튼 → `/oauth/start` → 콜백 → 팔로워 판정 → 연동·역할.
  *
  * 여기서 판정하는 것은 **조각이 아니라 이음매**다:
  *   · A 의 state 로 B 가 콜백을 열면 거부되고 **아무것도 바뀌지 않는다** (AC-3)
  *   · 중복 채널 → 거부 + 기존 행 무변화 + 운영 기록 1건 (AC-7·8)
  *   · `setNickname` 실패 → **인증 성공** + 실패 로그 1건 (AC-11)
- *   · `/인증` 5회 → 역할 1개, 오류 0 (AC-12)
+ *   · 인증 버튼 5회 → 역할 1개, 오류 0 (AC-12)
  *   · 비팔로워 5명 연속 → 상류 호출 **정확히 5회** (증폭 계수 1)
  *   · 같은 유저 30초 내 4회 → 상류 호출 **1회**
  *   · ★ 인증 후 **DB 전체 grep 에 access token 0건** (AC-10)
@@ -66,7 +66,7 @@ interface Env {
   guard: AuthGuard;
   followers: FollowerChecker;
   viewerToken: ViewerTokenClient;
-  linkCmd: SlashCommand;
+  linkCmd: Command;
   unlinkCmd: SlashCommand;
   statusCmd: SlashCommand;
   startRoute: Route;
@@ -78,6 +78,12 @@ interface Env {
   nickCalls: (string | null)[];
   logs: { message: string; extra?: Record<string, unknown> }[];
   failNickname: (on: boolean) => void;
+  /** 역할 부여를 403 으로 실패시킨다 (봇 역할이 대상 역할보다 아래인 상황) */
+  failRole: (on: boolean) => void;
+  /** 캐시가 "역할 없음" 을 아는 상태로 만든다 — `hasRole` 이 `false` 를 준다 */
+  forgetRole: (userId: string) => void;
+  /** 역할 부여가 응답을 영영 주지 않는다 — 시그널로만 끝난다 */
+  hangRole: (on: boolean) => void;
   /** 상류 응답에서 cachedAt 을 바꾼다 */
   setCachedAt: (iso: string) => void;
   setEverSynced: (v: boolean) => void;
@@ -209,12 +215,32 @@ function makeEnv(): Env {
   const roleGrants: string[] = [];
   const nickCalls: (string | null)[] = [];
   const held = new Set<string>();
+  /** `hasRole` 이 `false` 를 줄 대상 — "캐시에 있는데 역할이 없다" */
+  const knownMissing = new Set<string>();
   let nicknameFails = false;
+  let roleFails = false;
+  let roleHangs = false;
 
   const gateway: GateGateway = {
-    addRole(guildId, userId, roleId): Promise<void> {
+    addRole(guildId, userId, roleId, o): Promise<void> {
+      if (roleHangs) {
+        // ★ 절대 스스로 끝나지 않는다. 시그널만이 이 프라미스를 끝낸다.
+        return new Promise<void>((_, reject) => {
+          o?.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(new DiscordSendError('timeout', 'The operation was aborted'));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (roleFails) {
+        return Promise.reject(new DiscordSendError('forbidden', '봇 역할이 대상 역할보다 아래입니다', 403));
+      }
       roleGrants.push(`${guildId}:${userId}:${roleId}`);
       held.add(`${guildId}:${userId}:${roleId}`);
+      knownMissing.delete(`${guildId}:${userId}:${roleId}`);
       return Promise.resolve();
     },
     setNickname(_g, _u, nickname): Promise<void> {
@@ -224,7 +250,8 @@ function makeEnv(): Env {
       nickCalls.push(nickname);
       return Promise.resolve();
     },
-    hasRole: (g, u, r) => (held.has(`${g}:${u}:${r}`) ? true : undefined),
+    hasRole: (g, u, r) =>
+      held.has(`${g}:${u}:${r}`) ? true : knownMissing.has(`${g}:${u}:${r}`) ? false : undefined,
   };
 
   const logs: { message: string; extra?: Record<string, unknown> }[] = [];
@@ -238,6 +265,9 @@ function makeEnv(): Env {
     guard,
     clock,
     publicBaseUrl: PUBLIC_BASE,
+    gateway,
+    resolveVerifiedRoleId: () => ROLE,
+    regrantTimeoutMs: 30,
     onLog,
   });
   const unlinkCmd = createUnlinkCommand({ links, clock, onLog });
@@ -284,6 +314,15 @@ function makeEnv(): Env {
     failNickname: (on) => {
       nicknameFails = on;
     },
+    failRole: (on) => {
+      roleFails = on;
+    },
+    forgetRole: (userId) => {
+      knownMissing.add(`${GUILD}:${userId}:${ROLE}`);
+    },
+    hangRole: (on) => {
+      roleHangs = on;
+    },
     setCachedAt: (iso) => {
       cachedAt = iso;
     },
@@ -293,12 +332,22 @@ function makeEnv(): Env {
   };
 }
 
-/** `/인증` → 반환된 URL 에서 state 를 뽑는다 */
+/** 답장의 Link 버튼 URL. 없으면 `undefined` */
+function linkButtonUrl(reply: CommandReply): string | undefined {
+  for (const row of reply.components ?? []) {
+    for (const c of row.components) {
+      if ('url' in c) return c.url;
+    }
+  }
+  return undefined;
+}
+
+/** 인증 버튼 → 답장의 Link 버튼 URL 에서 state 를 뽑는다 */
 async function runLink(env: Env, userId: string): Promise<{ content: string; state: string }> {
   const reply = await env.linkCmd.execute({ guildId: GUILD, userId });
-  // ★ 링크는 `<...>` 로 감싸 나간다 — 디스코드 크롤러가 /oauth/start 를 가져가
-  //   nonce 를 회전시키는 것을 막기 위해서다. `>` 를 state 에 딸려 보내지 않는다.
-  const match = /\/oauth\/start\?s=([^\s>]+)/.exec(reply.content);
+  // ★ 링크는 본문이 아니라 **Link 버튼**에 실린다 — 본문 URL 은 디스코드 크롤러가
+  //   미리보기를 만들려고 가져가 /oauth/start 의 nonce 를 회전시킨다.
+  const match = /\/oauth\/start\?s=([^\s>]+)/.exec(linkButtonUrl(reply) ?? '');
   return { content: reply.content, state: match?.[1] ?? '' };
 }
 
@@ -584,7 +633,7 @@ describe('★★ AC-11 — setNickname 실패해도 인증은 성공한다', () 
 });
 
 describe('★★ AC-12 — 멱등', () => {
-  it('/인증 5회 → 역할 1개, 오류 0, state 1개', async () => {
+  it('인증 버튼 5회 → 역할 1개, 오류 0, state 1개', async () => {
     env.viewers.set('code-A', {
       channelId: 'aaaa1111bbbb2222cccc3333dddd4444',
       channelName: '시청자A',
@@ -770,13 +819,16 @@ describe('★★ AD-2 — 재조회는 정확히 1회, 그리고 성공하면 �
 });
 
 describe('운영 명령', () => {
-  it('명령 정의 — /연동해제 는 Manage Guild 로 노출 자체가 막힌다 (두 겹 중 첫 겹)', () => {
-    expect(env.linkCmd.definition).toMatchObject({ name: '인증', dm_permission: false });
+  it('명령 정의 — 운영자용 슬래시는 Manage Guild 로 노출 자체가 막힌다 (두 겹 중 첫 겹)', () => {
+    // ★ `인증` 은 슬래시 정의가 **없다** — 패널 버튼으로만 들어온다. 정의가 있으면
+    //   등록 목록에 실수로 끼어 슬래시가 되살아난다 (`commands/types.ts`).
+    expect('definition' in env.linkCmd).toBe(false);
     expect(env.statusCmd.definition.name).toBe('연동상태');
     expect(env.unlinkCmd.definition.name).toBe('연동해제');
     // Manage Guild = 1 << 5 = 32
     expect(env.unlinkCmd.definition.default_member_permissions).toBe('32');
-    expect(env.linkCmd.definition.default_member_permissions).toBeUndefined();
+    // `/연동상태` 도 슬래시로는 운영자에게만 보인다 — 멤버는 [내 연동 상태] 버튼을 쓴다
+    expect(env.statusCmd.definition.default_member_permissions).toBe('32');
   });
 
   it('/연동해제 는 운영자만 쓸 수 있고 행을 지운다', async () => {
@@ -881,10 +933,10 @@ describe('실패 격리', () => {
     expect(env.counts.token).toBe(0);
   });
   /**
-   * ★★ 디스코드 크롤러가 인증 링크를 가져가지 못하게 한다 (실배포 관측, 2026-09-08).
+   * ★★ 인증 링크는 **본문에 없고 Link 버튼에만** 있다 (실배포 관측, 2026-09-08).
    *
    *   `/oauth/start` 는 방문할 때마다 `attachNonce` 로 nonce 를 **회전**시키고
-   *   새 쿠키를 응답에 싣는다(`session.ts`). 그런데 디스코드는 메시지의 링크를
+   *   새 쿠키를 응답에 싣는다(`session.ts`). 그런데 디스코드는 메시지 **본문**의 링크를
    *   미리보기용으로 **직접 가져간다** — 벙커웹 로그에 남은 실제 요청:
    *
    *     35.237.4.214 "GET /oauth/start?s=71Usw…" "Mozilla/5.0 (compatible; Discordbot/2.0; …)"
@@ -893,15 +945,110 @@ describe('실패 격리', () => {
    *   머무는 사이에 도착하면 서버 해시가 크롤러의 nonce 로 덮이고, 사용자의 쿠키는
    *   어긋나 **콜백이 state 검증에서 거부**된다.
    *
-   * ★ `<...>` 는 디스코드가 미리보기를 만들지 않게 하는 표준 표기다. UA 를 보고
-   *   거르는 방식과 달리 **크롤러가 애초에 오지 않으므로** 문자열 판별에 기대지 않는다.
+   * ★ 컴포넌트(Link 버튼)의 URL 은 크롤링 대상이 아니다. 예전의 `<...>` 감싸기는
+   *   본문에 URL 이 있다는 전제의 방어였고, 본문에 URL 이 없으면 그 방어 자체가 필요 없다.
    */
-  it('★ 인증 링크는 <> 로 감싸 나간다 — 디스코드 크롤러가 가져가지 못하게', async () => {
+  it('★ 인증 링크는 본문이 아니라 Link 버튼으로만 나간다 (content 에 URL 0건)', async () => {
     const reply = await env.linkCmd.execute({ guildId: GUILD, userId: 'crawler-guard' });
-    const m = /(.?)https?:\/\/[^\s]*\/oauth\/start\?s=[^\s>]+(.?)/.exec(reply.content);
-    expect(m, '인증 링크가 응답에 없다').not.toBeNull();
-    expect(m?.[1], '링크 앞이 < 가 아니다').toBe('<');
-    expect(m?.[2], '링크 뒤가 > 가 아니다').toBe('>');
+    expect(reply.content, '본문에 링크가 있다').not.toMatch(/https?:\/\//);
+    expect(reply.content).not.toContain('/oauth/start');
+    const url = linkButtonUrl(reply);
+    expect(url, 'Link 버튼이 없다').toBeDefined();
+    expect(url).toContain(`${PUBLIC_BASE}/oauth/start?s=`);
+    // 버튼 라벨이 사람이 읽는 이름과 같다
+    const button = reply.components?.[0]?.components[0];
+    expect(button?.label).toBe(LINK_BUTTON_LABEL);
+  });
+});
+
+describe('★★ 역할 부여 실패 후 — 버튼을 다시 누르면 역할만 다시 붙는다', () => {
+  const viewer = {
+    channelId: 'aaaa1111bbbb2222cccc3333dddd4444',
+    channelName: '시청자A',
+    isFollower: true,
+  };
+
+  it('403 으로 연동만 남았다 → 원인 해결 뒤 재클릭 → REST 1회, 역할 부여, OAuth 재진행 없음', async () => {
+    env.failRole(true);
+    const res = await fullFlow(env, 'userA', viewer, 'code-A');
+    // 연동 행은 있고 역할은 없다 — 콜백이 연동을 역할보다 먼저 쓰기 때문이다.
+    expect(res.status).toBe(409);
+    expect(env.links.get(GUILD, 'userA')).toBeDefined();
+    expect(env.roleGrants).toHaveLength(0);
+    // 디스코드 캐시는 "이 멤버에게 역할이 없다" 를 안다.
+    env.forgetRole('userA');
+
+    // 아직 원인이 그대로다 — 다시 눌러도 실패 안내, 상류 호출은 없다.
+    env.clock.advance(60_000);
+    const stillBroken = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(stillBroken.content).toContain('권한이 없습니다');
+    expect(env.counts.token).toBe(1);
+
+    // 운영자가 봇 역할 순서를 고쳤다. 쿨다운이 지난 뒤 다시 누른다.
+    env.failRole(false);
+    env.clock.advance(60_000);
+    const nickBefore = env.nickCalls.length;
+    const fixed = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(fixed.content).toContain('빠져 있던 역할을 다시 부여했습니다');
+    expect(fixed.components).toBeUndefined(); // OAuth 링크를 주지 않는다
+    expect(env.roleGrants).toEqual([`${GUILD}:userA:${ROLE}`]);
+    expect(env.counts.token).toBe(1); // 상류는 그대로
+    expect(env.sessions.pendingCount()).toBe(0); // state 도 만들지 않았다
+    expect(env.nickCalls).toHaveLength(nickBefore); // 닉네임은 건드리지 않는다 (가정 6)
   });
 
+  it('캐시가 모르면(undefined) 멱등 부여 1회 — "빠져 있던" 이라고 단정하지 않는다', async () => {
+    env.failRole(true);
+    await fullFlow(env, 'userA', viewer, 'code-A');
+    // forgetRole 을 부르지 않는다 → hasRole 은 undefined 다
+    env.failRole(false);
+    env.clock.advance(60_000);
+    const r = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(r.content).toContain('역할을 확인해 부여했습니다');
+    expect(r.content).not.toContain('빠져 있던');
+    expect(env.roleGrants).toEqual([`${GUILD}:userA:${ROLE}`]);
+  });
+
+  it('★ 재부여 REST 가 3초 창을 넘기면 끊고 실패 안내를 낸다 — "응답 없음" 을 만들지 않는다', async () => {
+    env.failRole(true);
+    await fullFlow(env, 'userA', viewer, 'code-A');
+    env.forgetRole('userA');
+    env.failRole(false);
+    env.hangRole(true);
+
+    env.clock.advance(60_000);
+    const r = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(r.content).toContain('역할을 부여하지 못했습니다');
+    expect(env.logs.some((l) => l.message === '역할 재부여 실패' && l.extra?.['kind'] === 'timeout')).toBe(true);
+  });
+
+  it('★ 재부여도 쿨다운 안에 있다 — 403 상태에서 연타해도 REST 는 30초에 1회', async () => {
+    env.failRole(true);
+    await fullFlow(env, 'userA', viewer, 'code-A');
+    env.forgetRole('userA');
+
+    env.clock.advance(60_000);
+    const first = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(first.content).toContain('권한이 없습니다');
+    const rejectedBefore = env.guard.rejected.cooldown;
+
+    for (let i = 0; i < 3; i++) {
+      env.clock.advance(5_000);
+      const again = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+      expect(again.content).toContain('초 뒤에 다시');
+    }
+    expect(env.guard.rejected.cooldown).toBe(rejectedBefore + 3);
+  });
+
+  it('역할을 이미 갖고 있으면 안내만 — REST 0회 (AC-12 c)', async () => {
+    await fullFlow(env, 'userA', viewer, 'code-A');
+    expect(env.roleGrants).toHaveLength(1);
+
+    env.clock.advance(60_000);
+    const again = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(again.content).toContain('이미 치지직 채널');
+    expect(env.roleGrants).toHaveLength(1);
+    // 쿨다운도 소비하지 않았다 — 캐시 적중은 진입이 아니다.
+    expect(env.guard.cooldownRemainingSec(GUILD, 'userA')).toBe(0);
+  });
 });

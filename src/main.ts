@@ -1,5 +1,5 @@
-import { Events, MessageFlags, PermissionFlagsBits, Routes } from 'discord.js';
-import type { Client, Interaction } from 'discord.js';
+import { Events, Routes } from 'discord.js';
+import type { Client } from 'discord.js';
 import type { Logger } from 'pino';
 
 import { createFollowerChecker, type FollowerChecker } from './chzzk/follower-check.js';
@@ -21,16 +21,30 @@ import {
   type DiscordGateway,
   type SendOptions,
 } from './discord/client.js';
+import {
+  createGateChannelCommand,
+  GATE_CHANNEL_OPTION_NAME,
+} from './discord/commands/gate-channel.js';
 import { createLinkCommand } from './discord/commands/link.js';
 import { createAuthGuard, type AuthGuard } from './discord/commands/guard.js';
 import { createStatusCommand } from './discord/commands/status.js';
 import { createUnlinkCommand } from './discord/commands/unlink.js';
 import type {
+  Command,
   CommandContext,
   CommandReply,
   SlashCommand,
 } from './discord/commands/types.js';
 import type { GateGateway } from './discord/gate.js';
+import { createInteractionRouter } from './discord/interactions.js';
+import { unknownButtonMessage } from './discord/messages.js';
+import {
+  AUTH_PANEL_BUTTON_LINK,
+  AUTH_PANEL_BUTTON_STATUS,
+  createAuthPanelKeeper,
+  describeAuthPanelResult,
+  type AuthPanelKeeper,
+} from './discord/panel.js';
 import { buildUploadPayload, uploadLabel } from './discord/upload-embed.js';
 import {
   jobFromOutbox,
@@ -305,7 +319,7 @@ export type RoleCacheLookup = (
  *
  *   `discord/gate.ts` 가 이 계약 위에 서 있다: `undefined` 면 그때만 REST 를 부르고,
  *   `true` 면 부르지 않는다(AC-12 c). `false` 로 접으면 *"캐시에 없다"* 가
- *   *"역할이 없다"* 로 읽혀 **매번 REST 를 부른다** — 같은 사람이 `/인증` 을 다섯 번
+ *   *"역할이 없다"* 로 읽혀 **매번 REST 를 부른다** — 같은 사람이 인증 버튼을 다섯 번
  *   누르면 호출도 다섯 번 나가고, 그건 429 를 스스로 부르는 짓이다.
  *
  *   옵셔널 체이닝이 그 성질을 그대로 만든다: 길드나 멤버가 캐시에 없으면
@@ -416,10 +430,15 @@ export interface App {
   readonly protectedChannelIds: readonly string[];
   /** 기동 시점에 잰 다운타임 (AC-29/30) */
   readonly downtime: DowntimeWindow;
+  /** 슬래시로 **등록되는** 명령 — 운영자용만 */
   readonly commands: ReadonlyMap<string, SlashCommand>;
+  /** 패널 버튼 `custom_id` → 명령. 멤버용 진입점 */
+  readonly buttons: ReadonlyMap<string, Command>;
+  readonly authPanel: AuthPanelKeeper;
 
   /** 상호작용에서 뽑아낸 컨텍스트로 슬래시 명령을 태운다 */
   dispatchCommand(name: string, ctx: CommandContext): Promise<CommandReply>;
+  dispatchButton(customId: string, ctx: CommandContext): Promise<CommandReply>;
   /** ④ 폴러·감시자 기동. 복구가 끝난 뒤에만 부른다 */
   start(): Promise<void>;
   /** 정리만 한다 — **프로세스를 끝내지 않는다** (그건 `main()` 의 일이다) */
@@ -1066,7 +1085,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     cooldownSec: file.auth.commandCooldownSec,
     maxConcurrentFlows: file.auth.maxConcurrentFlows,
     onReject: (reason) => {
-      logger.info({ metric: 'auth_flow_rejected', reason }, '/인증 진입 거절');
+      logger.info({ metric: 'auth_flow_rejected', reason }, '인증 진입 거절');
     },
   });
 
@@ -1237,65 +1256,98 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     }),
   );
 
-  // ── 슬래시 명령 ──────────────────────────────────────────────
+  // ── 인증 패널 (게이트 채널의 임베드 + 버튼 — 멤버용 진입점) ─────
+  const authPanel = createAuthPanelKeeper({
+    gateway,
+    state: runtimeState,
+    clock,
+    onLog: (message, extra) => {
+      logger.info(extra ?? {}, message);
+    },
+  });
+
+  // ── 명령 — 슬래시(운영자용) · 패널 버튼(멤버용) ────────────────
+  const commandLog = (message: string, extra?: Record<string, unknown>): void => {
+    logger.info(extra ?? {}, message);
+  };
+
+  const linkCommand = createLinkCommand({
+    sessions,
+    links,
+    guard: authGuard,
+    clock,
+    publicBaseUrl: file.web.publicBaseUrl,
+    gateway: gateGateway,
+    resolveVerifiedRoleId: (guildId) => guildConfig.get(guildId)?.verifiedRoleId,
+    onLog: commandLog,
+  });
+  const statusCommand = createStatusCommand({ links });
+
+  /**
+   * ★ 슬래시로 **등록되는** 것은 운영자용 셋뿐이다. `인증` 은 여기 없다 —
+   *   `PUT applicationGuildCommands` 가 전체 교체라, 목록에서 빠지면 다음 기동에
+   *   디스코드에서도 사라진다.
+   */
   const commands = new Map<string, SlashCommand>();
   for (const command of [
-    createLinkCommand({
-      sessions,
-      links,
-      guard: authGuard,
-      clock,
-      publicBaseUrl: file.web.publicBaseUrl,
-      onLog: (message, extra) => {
-        logger.info(extra ?? {}, message);
+    createUnlinkCommand({ links, clock, onLog: commandLog }),
+    statusCommand,
+    createGateChannelCommand({
+      config: {
+        gateChannelId: (guildId) => guildConfig.get(guildId)?.gateChannelId,
+        setGateChannel: (guildId, channelId, at) => {
+          guildConfig.upsert({ guildId, gateChannelId: channelId }, at);
+        },
       },
-    }),
-    createUnlinkCommand({
-      links,
+      panel: authPanel,
       clock,
-      onLog: (message, extra) => {
-        logger.info(extra ?? {}, message);
-      },
+      onLog: commandLog,
     }),
-    createStatusCommand({ links }),
   ]) {
     commands.set(command.definition.name, command);
   }
 
-  const dispatchCommand = async (name: string, ctx: CommandContext): Promise<CommandReply> => {
-    const command = commands.get(name);
-    if (command === undefined) return { ephemeral: true, content: '알 수 없는 명령입니다.' };
+  /** 패널 버튼 → 명령. `custom_id` 는 `discord/panel.ts` 가 못 박는다 */
+  const buttons = new Map<string, Command>([
+    [AUTH_PANEL_BUTTON_LINK, linkCommand],
+    [AUTH_PANEL_BUTTON_STATUS, statusCommand],
+  ]);
+
+  const runCommand = async (label: string, command: Command, ctx: CommandContext): Promise<CommandReply> => {
     try {
       return await command.execute(ctx);
     } catch (e: unknown) {
       // 명령은 던지지 않기로 돼 있지만 계약을 신뢰하지 않는다 — 여기서 새면
       // 사용자는 "애플리케이션이 응답하지 않음" 만 본다.
-      logger.error({ command: name, detail: e instanceof Error ? e.message : String(e) }, '명령 처리 실패');
+      logger.error({ command: label, detail: e instanceof Error ? e.message : String(e) }, '명령 처리 실패');
       return { ephemeral: true, content: '명령을 처리하지 못했습니다. 잠시 후 다시 시도해 주십시오.' };
     }
   };
 
+  const dispatchCommand = (name: string, ctx: CommandContext): Promise<CommandReply> => {
+    const command = commands.get(name);
+    if (command === undefined) return Promise.resolve({ ephemeral: true, content: '알 수 없는 명령입니다.' });
+    return runCommand(name, command, ctx);
+  };
+
+  const dispatchButton = (customId: string, ctx: CommandContext): Promise<CommandReply> => {
+    const command = buttons.get(customId);
+    // ★ 버튼 상호작용은 우리 앱이 보낸 메시지의 것만 온다. 모르는 id 는 옛 버전 패널이다.
+    //   응답은 반드시 한다 — 안 하면 사용자는 "상호작용 실패" 만 본다.
+    if (command === undefined) return Promise.resolve({ ephemeral: true, content: unknownButtonMessage() });
+    return runCommand(customId, command, ctx);
+  };
+
   if (client !== undefined) {
-    const onInteraction = async (interaction: Interaction): Promise<void> => {
-      if (!interaction.isChatInputCommand()) return;
-      if (interaction.guildId === null) {
-        await interaction.reply({
-          content: '이 명령은 서버 안에서만 사용할 수 있습니다.',
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      // ★ 상호작용에서 컨텍스트 넷을 뽑는 것이 조립부의 일이다 (`commands/types.ts`).
-      const reply = await dispatchCommand(interaction.commandName, {
-        guildId: interaction.guildId,
-        userId: interaction.user.id,
-        // ★ `default_member_permissions` 와 두 겹이다. 그쪽은 디스코드가 안 보여주는
-        //   것이고 이쪽은 우리가 거부하는 것이다 — 표시 제어는 권한 검사가 아니다.
-        isOperator: interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false,
-        targetUserId: interaction.options.getUser(TARGET_OPTION_NAME)?.id,
-      });
-      await interaction.reply({ content: reply.content, flags: MessageFlags.Ephemeral });
-    };
+    // ★ 상호작용 → 명령 접기는 `discord/interactions.ts` 가 한다 (거기서 시험된다).
+    const onInteraction = createInteractionRouter({
+      commands,
+      buttons,
+      dispatchCommand,
+      dispatchButton,
+      targetUserOption: TARGET_OPTION_NAME,
+      targetChannelOption: GATE_CHANNEL_OPTION_NAME,
+    });
 
     client.on(Events.InteractionCreate, (interaction) => {
       void onInteraction(interaction).catch((e: unknown) => {
@@ -1314,7 +1366,10 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
           body: [...commands.values()].map((c) => c.definition),
         })
         .then(() => {
-          logger.info({ guildId: guild.guildId, count: commands.size }, '슬래시 명령을 등록했습니다');
+          logger.info(
+            { guildId: guild.guildId, count: commands.size, names: [...commands.keys()] },
+            '슬래시 명령을 등록했습니다 (운영자용 — 멤버 진입점은 인증 패널)',
+          );
         })
         .catch((e: unknown) => {
           logger.error(
@@ -1585,19 +1640,35 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     protectedChannelIds,
     downtime,
     commands,
+    buttons,
+    authPanel,
     dispatchCommand,
+    dispatchButton,
 
     async start(): Promise<void> {
       liveness.start();
       livePoller.start();
       await websub.start();
       await rssPoller.start();
+      // ★ 패널은 폴러들 뒤, 기동 로그 앞이다. 실패해도 기동은 막지 않지만(Principle 2)
+      //   그 결과가 기동 로그 한 줄에 실려야 런북 §2-5 가 본다 — 패널이 없으면 진입점이 없다.
+      const panel = await authPanel.ensure(guildConfig.single()?.gateChannelId);
+      if (panel.outcome === 'skipped') {
+        // ★ 패널이 없으면 인증 진입점이 0개다 — warn 이 아니라 error 다.
+        //   `guildRows` 를 함께 찍는다: 행이 0개도 2개 이상도 `single()` 은 `undefined` 인데,
+        //   2개 이상이면 슬래시 명령 자체가 등록되지 않아 `/인증채널` 로는 고칠 수 없다 (런북 §1-2-a).
+        logger.error(
+          { reason: panel.reason, detail: panel.detail, guildRows: guildConfig.list().length },
+          '인증 패널이 없습니다 — 멤버가 인증을 시작할 수 없습니다. guild_config 가 1행이면 /인증채널 로 채널을 지정하십시오',
+        );
+      }
       logger.info(
         {
           address: boundAddress.address,
           port: boundAddress.port,
           liveChannelId: file.live.channelId,
           youtubeChannels: file.youtube.channels.length,
+          authPanel: describeAuthPanelResult(panel),
         },
         '기동을 마쳤습니다',
       );

@@ -1,10 +1,10 @@
 import type { Clock } from '../../runtime/clock.js';
 
 /**
- * `/인증` 진입 리밋 — §5.6.2 (FM4) · Pre-mortem 3-b.
+ * `인증` 진입 리밋 — §5.6.2 (FM4) · Pre-mortem 3-b.
  *
  * ★ 막는 표면이 무엇인지 분명히 해 둔다. `/oauth/callback` 은 **state-먼저 검증**이라
- *   외부인은 토큰 교환까지 도달하지 못한다. 남는 표면은 **길드 멤버가 `/인증` 반복으로
+ *   외부인은 토큰 교환까지 도달하지 못한다. 남는 표면은 **길드 멤버가 인증 버튼 반복으로
  *   FM1(이벤트 루프 포화)을 스스로 유발하는 것**이고, 그것이 초대 링크가 유출돼
  *   30명이 동시에 누르는 Pre-mortem 3-b 와 **정확히 같은 표면**이다.
  *
@@ -20,7 +20,7 @@ import type { Clock } from '../../runtime/clock.js';
  *   자동으로 돌려주게 하는 편이 옳다.
  *
  * ⚠️ `auth.maxConcurrentFlows`(8) 와 `http.maxConcurrent`(8) 는 **다른 것이다.**
- *   여기는 `/인증` **진입**의 동시 수, 저기는 **나가는 HTTP** 의 동시 수다 (§5.6.1).
+ *   여기는 `인증` **진입**의 동시 수, 저기는 **나가는 HTTP** 의 동시 수다 (§5.6.1).
  */
 
 export const AUTH_REJECT_REASONS = ['cooldown', 'max-concurrent', 'pending-max'] as const;
