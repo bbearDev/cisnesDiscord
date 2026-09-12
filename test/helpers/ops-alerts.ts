@@ -1,4 +1,4 @@
-import type { OpsAlertService } from '../../src/runtime/alerts/ops-alert-service.js';
+import type { AlertOutcome, OpsAlertService } from '../../src/runtime/alerts/ops-alert-service.js';
 import type { AlertKind } from '../../src/runtime/alerts/types.js';
 
 /**
@@ -20,16 +20,25 @@ export interface FakeOpsAlerts {
   readonly raised: readonly RaisedAlert[];
   countOf(kind: AlertKind): number;
   reset(): void;
+  /**
+   * 다음 `raise` 들이 돌려줄 결과. 기본 `'sent'`.
+   *
+   * ★ 실제 서비스는 `suppressed`(디바운스) · `disabled` · `skipped-no-url` · `failed` 도 돌려주고,
+   *   그 넷은 **운영자에게 아무것도 닿지 않은** 것이다. "울렸다" 를 영속 기록하는 코드는
+   *   이 구분을 봐야 하므로 가짜도 그 결과를 낼 수 있어야 한다.
+   */
+  setOutcome(outcome: AlertOutcome): void;
 }
 
 export function createFakeOpsAlerts(scope = 'test-scope'): FakeOpsAlerts {
   const raised: RaisedAlert[] = [];
+  let outcome: AlertOutcome = 'sent';
 
   const make = (s: string): OpsAlertService => ({
     scope: s,
     raise: (kind, message) => {
       raised.push({ kind, message, scope: s });
-      return Promise.resolve('sent');
+      return Promise.resolve(outcome);
     },
     forScope: (next) => make(next),
   });
@@ -42,6 +51,9 @@ export function createFakeOpsAlerts(scope = 'test-scope'): FakeOpsAlerts {
     countOf: (kind) => raised.filter((r) => r.kind === kind).length,
     reset: () => {
       raised.length = 0;
+    },
+    setOutcome: (o) => {
+      outcome = o;
     },
   };
 }

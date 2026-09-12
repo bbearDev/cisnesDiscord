@@ -432,6 +432,27 @@ describe('★★ 채널 필터 — 남의 방송을 우리 서버에 공지하�
       expect(readSeenUnknownChannels(store)).toEqual([NEWCOMER, FOREIGN].sort());
     });
 
+    it('★★ 경보가 실제로 나가지 않았으면(suppressed 등) 기록하지 않는다 — 다음 재기동에 다시 기회를 얻는다', async () => {
+      // 실제 서비스는 디바운스·설정 꺼짐·웹훅 미설정·발송 실패를 값으로 돌려준다. 그 넷은
+      // 운영자에게 아무것도 닿지 않은 것이라, 그때 "울렸다" 로 영속 기록하면 그 채널은
+      // 영영 묻힌다 — 특히 낯선 채널 둘이 디바운스 창 안에 나타나면 둘째가 그렇게 된다.
+      for (const outcome of ['suppressed', 'disabled', 'skipped-no-url', 'failed'] as const) {
+        const store = memoryStore();
+        const first = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+        alerts.setOutcome(outcome);
+        await first.p.poll();
+        await first.p.poll(); // 같은 프로세스 안에서는 재시도하지 않는다
+        expect(alerts.countOf('unknown_channel'), outcome).toBe(1);
+        expect(readSeenUnknownChannels(store), outcome).toEqual([]);
+
+        // 재기동 — 이번엔 나간다 → 그제야 기록된다
+        const second = boot(store, fromFixture('chzzkbot/api-live-2channels-idle.json'));
+        await second.p.poll();
+        expect(alerts.countOf('unknown_channel'), outcome).toBe(1);
+        expect(readSeenUnknownChannels(store), outcome).toEqual([FOREIGN]);
+      }
+    });
+
     it('저장값이 깨졌으면 빈 목록으로 본다 — 한 번 더 울릴 뿐 폴링은 산다', async () => {
       const store = memoryStore();
       store.set(UNKNOWN_CHANNELS_SEEN_KEY, '{oops', '');

@@ -232,10 +232,9 @@ export function createLivePoller(opts: LivePollerOptions): LivePoller {
         }
         const unalerted = fresh.filter((id) => !alertedUnknownChannels.has(id));
         if (unalerted.length > 0) {
-          rememberAlerted(unalerted);
           // ★ 무필터 폴링이라야 이 경보가 성립한다 (§5.2-c 보호 목록 (b)).
           //   `?channel=` 을 붙이면 응답에 우리 채널만 와서 이 줄이 영영 안 돈다.
-          await alerts.raise(
+          const outcome = await alerts.raise(
             'unknown_channel',
             '설정에 없는 채널이 GET /api/live 응답에 처음 보입니다: ' +
               `${unalerted.join(', ')}\n` +
@@ -243,6 +242,13 @@ export function createLivePoller(opts: LivePollerOptions): LivePoller {
               'LIVE_API_TOKEN 은 chzzkbot 에 등록된 모든 채널을 여는 운영자 토큰이므로, ' +
               '거르는 책임은 우리에게 있습니다.',
           );
+          // ★★ **실제로 나갔을 때만** "울렸다" 로 기록한다. `suppressed`(디바운스) · `disabled` ·
+          //   `skipped-no-url` · `failed` 는 운영자에게 아무것도 닿지 않은 것인데, 그때도 기록하면
+          //   그 채널은 재기동을 넘어 **영영** 울리지 않는다 — 이 기록이 영속이라 메모리 시절에
+          //   있던 "다음 재기동에 저절로 복구" 도 없다. 특히 낯선 채널 둘이 디바운스 창 안에
+          //   나타나면 둘째가 조용히 묻힌다 (PR #9 리뷰). 못 보낸 것은 다음 재기동에 한 번 더
+          //   기회를 얻는다 — 이 프로세스 안에서는 `emittedUnknownChannels` 가 재시도를 막는다.
+          if (outcome === 'sent') rememberAlerted(unalerted);
         }
         judgment =
           res.target === undefined
