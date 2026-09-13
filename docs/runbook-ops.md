@@ -345,6 +345,7 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 ### 4-6. ★ chzzkbot 이 죽었을 때 — 온보딩이 멈춘다
 
 **증상**: 인증이 전부 `unknown`(보류)으로 끝난다. `live_api_unknown_streak` 상승, AC-P2 경보.
+(AC-P2 **없이** `stale` 만 이어지면 §4-6-a 다 — chzzkbot 은 살아 있고 캐시만 멈춘 것.)
 
 > ## ⚠️ AD-3 수동 승인은 **아직 구현되지 않았다**
 >
@@ -358,6 +359,27 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 >
 > 이것은 알면서 받아들인 상태다 — 계획 §12-b-1 이 *"chzzkbot 다운 시 폭발 반경이
 > AC 표면 1/3 → 2/3(온보딩 포함)"* 로 이미 기록했다.
+
+### 4-6-a. ★★ chzzkbot 은 살아 있는데 방송 밖 인증이 전부 "확인하지 못했습니다" — 상류 캐시가 방송 밖에서 멈췄다
+
+**증상**: 방송 중에는 인증이 되는데, 방송이 끝나고 두어 시간 뒤부터 인증이 전부 `unknown` — 로그 `팔로워 판정 보류` 의 `reason` 이 **`stale`**. AC-P2 경보는 **없다**(`/api/live` 는 정상이다). chzzkbot 은 active.
+
+```bash
+grep -h '팔로워 판정 보류' data/logs/cisnes.$(date +%F).*.log | grep -o '"reason":"[a-z-]*"' | sort | uniq -c
+sqlite3 ~/git/chzzkbot/data/bot.db \
+  "SELECT channel_id, last_full_sync_at,
+          CAST((julianday('now') - julianday(last_full_sync_at)) * 1440 AS INTEGER) AS age_min
+     FROM follower_sync_state;"
+```
+
+**원인**: chzzkbot 의 팔로워 캐시 주기 갱신이 **방송 중에만** 돌던 버전이다 (`activeSessionId` 없으면 건너뜀). 마지막 방송이 끝난 시각에 캐시가 멈추고, 150분(`follower.staleAfterMin`)이 지나면 우리 게이트가 판정을 유보한다. 2026-09-12 실배포에서 새벽 방송 뒤 낮의 인증 5건이 전부 이렇게 유보됐다. 계약 조항 **R6** (`docs/s0-prerequisites.md` §6).
+
+**조치**: chzzkbot 을 **`bbearDev/chzzkbot#9` 이상**으로 올리고 재기동. 첫 주기(10분)부터 수 조회가 돌고 1~2시간 안에 전수가 한 번 돈다 — 그때부터 `age_min` 이 `60 + 채널별 지터 + followerCacheMin`(기본 설정 130분, 채널별 실측은 §8-c 표) 아래로 유지된다.
+**함께 볼 것**: `grep followerCacheMin ~/git/chzzkbot/config/config.yaml` — 10 이 아니면 R6-b(s0-prerequisites §6): 우리 `UPSTREAM_FOLLOWER_CACHE_MIN` 을 같은 값으로 고치고 `staleAfterMin` 을 `60 + 60 + 그 값` 위로. 상류는 팔로워 5,000명이 넘으면 그 값을 올리라고 권고하므로 **채널이 커지면 실제로 바뀐다.**
+
+**임시 우회**: 스트리머가 방송을 켜면 상류가 그 순간 캐시를 당겨 받으므로 방송 중·종료 후 150분까지는 인증이 된다.
+
+> ★ `staleAfterMin` 을 올려서 넘기지 않는다 — 그리고 **내리지도 않는다.** 상류가 정상일 때 `cachedAt` 나이는 `60(안전장치) + 0~60(채널별 지터) + followerCacheMin(판정 틱)` 분까지다 — 기본 설정에서 130분(이론 상한, 여유 20분), 채널별 실측은 §8-c 표(시스네 72.6 → 여유 77.4 · 아이곰 115.9 → 여유 34.1). 올리면 "낡은 목록으로 신규 팔로워를 거부" 하는 쪽이고(§3-a 3위), 내리면 정상 상태가 `stale` 로 읽힌다. 상류 `followerCacheMin` 이 바뀌면 이 상한도 따라 움직인다 — 위 "함께 볼 것".
 
 ### 4-7. ★ 인증 패널이 없다 / 버튼이 안 보인다 — 멤버가 인증을 시작할 수 없다
 
@@ -532,12 +554,12 @@ chzzkbot 쪽 확인 결과(2026-09-07), 팔로워 동기화의 페이지 루프�
 **대응**: 대상 채널 팔로워 수가 **10,000명에 근접하면 chzzkbot 쪽에 상한 상향을 요청한다.**
 §7 일상 점검에 감시 항목으로 넣었다.
 
-### 8-c. ☐ `FOLLOWER_UPSTREAM_WORST_AGE_MIN` 파생식이 실제 근거와 다르다 (미해결 · 지금은 무해)
+### 8-c. ☑ `FOLLOWER_UPSTREAM_WORST_AGE_MIN` 파생식 — 상류 소스 확인으로 **식은 옳았다** (2026-09-13 해소 · 남은 것은 R6-b 결합)
 
-> 이슈: `bbearDev/cisnesDiscord#1`
+> 이슈: `bbearDev/cisnesDiscord#1` · 결론은 이 절 끝의 "확인됨" 단락. 아래 본문은 확인 전의 추론으로 남겨 둔다.
 
 **상태: 지금 고장 난 것은 없다.** 두 계산이 같은 값 130 을 내므로 부팅 게이트는 정확히 옳게
-동작한다. 고칠 것은 **값이 아니라 피연산자**다.
+동작한다. ~~고칠 것은 **값이 아니라 피연산자**다.~~ → 확인 결과 피연산자도 맞다(절 끝).
 
 ```
 우리 식(schema.ts:55):  2 × sweepInterval(60)          + followerCacheMin(10)  = 130
@@ -569,9 +591,10 @@ chzzkbot 쪽 확인 결과(2026-09-07), 팔로워 동기화의 페이지 루프�
 않는다. 온보딩이 멈추고, `follower_lookup_unknown_total{reason="stale"}` 이 무고장 상태에서
 오르는 것이 신호로 남는다 — 조용히 썩지는 않는다.
 
-**★ 고치기 전 확인 필요**: chzzkbot 이 *"60분 + 채널 고정 지터(0~60분)"* 라고만 알려줘서,
-**지터 범위가 스윕 간격에서 파생되는지 고정 60분인지 미확인**이다. 이것이 위 시나리오 B 의
-결과를 정반대로 바꾼다. 상류에 먼저 물어야 한다.
+**★ 확인됨 (2026-09-13, 상류 소스 `follower-cache-job.ts` 직접 확인)**:
+- 지터는 **간격에서 파생**된다 — `sweepJitterFor(channelId, sweepIntervalMs)` = FNV 해시 `% intervalMs`, 즉 `[0, 간격)`. 따라서 **시나리오 B 는 성립하지 않는다**: 스윕이 30분이 되면 지터도 0~30분이라 실제 최악은 `2 × 30 + 틱` 이고 우리 식과 같다.
+- 판정 틱은 `every('follower', followerCacheMin × 60_000)` — **상류 `followerCacheMin` 그 자체**다. 우리가 "캐시 TTL" 로 읽던 상수가 실제로는 틱이고, 상류에서 그 둘은 같은 설정값 하나다. 그래서 `2 × sweepInterval + followerCacheMin` 은 **우연이 아니라 옳은 식**이다.
+- 남는 것은 결합 하나: **상류가 `followerCacheMin` 을 바꾸면 우리 `UPSTREAM_FOLLOWER_CACHE_MIN` 을 같이 고쳐야 부팅 게이트가 맞는 바닥을 본다.** 상류는 팔로워 5,000명 초과 채널에 그 값을 올리라고 권고하므로 실제로 바뀔 수 있다 — s0-prerequisites §6 **R6-b** 와 §4-6-a 의 "함께 볼 것" 이 그 절차다. 위 "고칠 때 할 일" 의 상수 신설(`UPSTREAM_SWEEP_MAX_JITTER_MIN` 등)은 **불필요**해졌다.
 
 **고칠 때 할 일** (값 130 불변 — 동작 검증 단언은 전부 그대로 초록):
 1. 상류에 지터 범위 성격 확인
