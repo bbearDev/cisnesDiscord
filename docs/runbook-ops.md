@@ -345,6 +345,7 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 ### 4-6. ★ chzzkbot 이 죽었을 때 — 온보딩이 멈춘다
 
 **증상**: 인증이 전부 `unknown`(보류)으로 끝난다. `live_api_unknown_streak` 상승, AC-P2 경보.
+(AC-P2 **없이** `stale` 만 이어지면 §4-6-a 다 — chzzkbot 은 살아 있고 캐시만 멈춘 것.)
 
 > ## ⚠️ AD-3 수동 승인은 **아직 구현되지 않았다**
 >
@@ -358,6 +359,26 @@ systemctl --user reset-failed cisnesdiscord && systemctl --user start cisnesdisc
 >
 > 이것은 알면서 받아들인 상태다 — 계획 §12-b-1 이 *"chzzkbot 다운 시 폭발 반경이
 > AC 표면 1/3 → 2/3(온보딩 포함)"* 로 이미 기록했다.
+
+### 4-6-a. ★★ chzzkbot 은 살아 있는데 방송 밖 인증이 전부 "확인하지 못했습니다" — 상류 캐시가 방송 밖에서 멈췄다
+
+**증상**: 방송 중에는 인증이 되는데, 방송이 끝나고 두어 시간 뒤부터 인증이 전부 `unknown` — 로그 `팔로워 판정 보류` 의 `reason` 이 **`stale`**. AC-P2 경보는 **없다**(`/api/live` 는 정상이다). chzzkbot 은 active.
+
+```bash
+grep -h '팔로워 판정 보류' data/logs/cisnes.$(date +%F).*.log | grep -o '"reason":"[a-z-]*"' | sort | uniq -c
+sqlite3 ~/git/chzzkbot/data/bot.db \
+  "SELECT channel_id, last_full_sync_at,
+          CAST((julianday('now') - julianday(last_full_sync_at)) * 1440 AS INTEGER) AS age_min
+     FROM follower_sync_state;"
+```
+
+**원인**: chzzkbot 의 팔로워 캐시 주기 갱신이 **방송 중에만** 돌던 버전이다 (`activeSessionId` 없으면 건너뜀). 마지막 방송이 끝난 시각에 캐시가 멈추고, 150분(`follower.staleAfterMin`)이 지나면 우리 게이트가 판정을 유보한다. 2026-09-12 실배포에서 새벽 방송 뒤 낮의 인증 5건이 전부 이렇게 유보됐다. 계약 조항 **R6** (`docs/s0-prerequisites.md` §6).
+
+**조치**: chzzkbot 을 **`bbearDev/chzzkbot#9` 이상**으로 올리고 재기동. 첫 주기(10분)부터 수 조회가 돌고 1시간 안에 전수가 한 번 돈다 — 그때부터 `age_min` 이 60여 분 아래로 유지된다.
+
+**임시 우회**: 스트리머가 방송을 켜면 상류가 그 순간 캐시를 당겨 받으므로 방송 중·종료 후 150분까지는 인증이 된다.
+
+> ★ `staleAfterMin` 을 올려서 넘기지 않는다. 상류가 정상일 때 `cachedAt` 나이는 최대 1시간 남짓(안전장치 60분 + 지터)이라 150분은 그 위의 여유이고, 그 이상은 "낡은 목록으로 신규 팔로워를 거부" 하는 쪽이다(§3-a 3위).
 
 ### 4-7. ★ 인증 패널이 없다 / 버튼이 안 보인다 — 멤버가 인증을 시작할 수 없다
 
