@@ -70,6 +70,9 @@ export function feedUrl(channelId: string): string {
  */
 export const RSS_CHANNEL_BUDGET_MS = 10_000;
 
+/** `onLog` 의 레벨. 기본은 `info` 다 */
+export type RssLogLevel = 'info' | 'warn';
+
 export type RssPollOutcome =
   | { ok: true; channelId: string; entries: number; skipped: number; flow: UploadFlowResult }
   | { ok: false; channelId: string; reason: string };
@@ -85,7 +88,12 @@ export interface RssPollerOptions {
   /** 설정 `youtube.rssPollSec` (기본 60) */
   pollSec: number;
   onAlert?: (a: StuckAlert) => void | Promise<void>;
-  onLog?: (message: string, extra?: Record<string, unknown>) => void;
+  /**
+   * ★ 세 번째 인자는 **로그 레벨**이다. 기본 `info` 이고 `warn` 은 사람이 봐야 하는
+   *   상태에만 쓴다 — 런북 §7 일상 점검이 `"level":[456]0` 으로 훑는 그 축이다.
+   *   레벨을 `extra` 에 담으면 pino 자신의 `level` 필드와 이름이 부딪친다.
+   */
+  onLog?: (message: string, extra?: Record<string, unknown>, level?: RssLogLevel) => void;
   /** 테스트 주입점 */
   feedUrlFor?: (channelId: string) => string;
 }
@@ -108,9 +116,9 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
   const known = new Map(opts.configured.map((c) => [c.channelId, c.label]));
   let timer: Disposable | undefined;
 
-  const log = (message: string, extra?: Record<string, unknown>): void => {
+  const log = (message: string, extra?: Record<string, unknown>, level?: RssLogLevel): void => {
     try {
-      opts.onLog?.(message, extra);
+      opts.onLog?.(message, extra, level ?? 'info');
     } catch {
       /* 로그가 폴을 죽이면 안 된다 (Principle 2) */
     }
@@ -155,6 +163,30 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
       await observe(channelId, true, at);
       log('rss 피드 파싱 실패', { channelId, reason });
       return { ok: false, channelId, reason };
+    }
+
+    /**
+     * ★★ **엔트리 0건은 "새 영상 없음" 이 아니다.**
+     *
+     *   유튜브 채널 피드는 새 업로드가 없어도 **최근 15건을 늘 담아** 돌려준다.
+     *   그러므로 0건은 정상 상태가 아니라 *"가져오기가 사실상 실패했다"* 는 뜻이다.
+     *   실제로 우리 IP 가 조여졌을 때 피드가 **200 인데 본문이 빈** 형태로 왔다
+     *   (2026-09-10 · 09-14 관측). 이 경우 `parseFeed` 는 성공하고 엔트리만 0이라,
+     *   기존 경로에서는 **로그 한 줄도 남지 않고** 조용히 "처리할 것 없음" 이 됐다.
+     *
+     * ★ 그래서 warn 으로 남긴다. 런북 §7 일상 점검이 `"level":[456]0` 을 훑으므로
+     *   사람 눈에 걸린다.
+     *
+     * ★★ **실패로 세지는 않는다.** 두 가지 이유다:
+     *   ① 영상이 하나도 없는 채널은 정상적으로 0건이고, 그런 채널을 설정하면
+     *      25분마다 영구히 오탐 경보가 난다.
+     *   ② 전용 경보 종류(`rss_empty`)를 만들려면 `alert_state.alert_kind` 의 CHECK 를
+     *      고쳐야 하는데 그건 마이그레이션 002 대상이다 (런북 §8-a).
+     *   기존 `rss_fail` 을 재사용하면 두 원인이 같은 (scope, kind) 디바운스를 공유해
+     *   서로를 가린다 — 진짜 가져오기 실패가 빈 피드에 묻힌다.
+     */
+    if (parsed.entries.length === 0) {
+      log('rss 피드가 비어 있습니다 — 스로틀 의심 (0건은 정상 상태가 아니다)', { channelId }, 'warn');
     }
 
     await observe(channelId, false, at);

@@ -88,6 +88,7 @@ interface FakeNet {
 }
 
 interface Harness {
+  logs: { message: string; extra?: Record<string, unknown>; level?: string }[];
   clock: ManualClock;
   db: Db;
   ledger: AnnouncementLedgerRepo;
@@ -283,6 +284,7 @@ function build(opts: BuildOptions = {}): Harness {
   if (getRoute === undefined || postRoute === undefined) throw new Error('라우트가 없습니다');
   routeRef.get = getRoute;
 
+  const logs: { message: string; extra?: Record<string, unknown>; level?: string }[] = [];
   const poller = createRssPoller({
     http,
     flow,
@@ -294,9 +296,13 @@ function build(opts: BuildOptions = {}): Harness {
     onAlert: (a) => {
       alerts.push(a);
     },
+    onLog: (message, extra, level) => {
+      logs.push({ message, ...(extra === undefined ? {} : { extra }), ...(level === undefined ? {} : { level }) });
+    },
   });
 
   return {
+    logs,
     clock,
     db,
     ledger,
@@ -1099,5 +1105,41 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
     await h.websub.sweep();
     expect(h.net.hubRequests, '성공 후에도 백오프가 남아 있었다').toHaveLength(4);
+  });
+});
+
+describe('★★ 빈 피드는 "새 영상 없음" 이 아니다 — 조용히 넘어가지 않는다', () => {
+  it('엔트리 0건이면 warn 으로 남는다', async () => {
+    // 유튜브 채널 피드는 새 업로드가 없어도 최근 15건을 늘 담아 준다.
+    // 그러므로 0건은 정상 상태가 아니라 "가져오기가 사실상 실패했다" 는 뜻이다.
+    // 실제로 IP 가 조여졌을 때 200 인데 본문이 빈 형태로 왔다 (2026-09-10 · 09-14).
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+
+    const out = await h.poller.pollOnce(CH);
+    expect(out.ok && out.entries).toBe(0);
+
+    const warn = h.logs.filter((l) => l.level === 'warn' && l.message.includes('비어 있습니다'));
+    expect(warn, '빈 피드가 로그에 한 줄도 안 남았다').toHaveLength(1);
+    expect(warn[0]?.extra).toMatchObject({ channelId: CH });
+  });
+
+  it('★ 엔트리가 있으면 그 경고는 나오지 않는다', async () => {
+    const h = harness();
+    h.net.feeds.set(CH, fixture('push-single.xml'));
+
+    await h.poller.pollOnce(CH);
+    expect(h.logs.filter((l) => l.message.includes('비어 있습니다'))).toHaveLength(0);
+  });
+
+  it('★★ 그래도 실패로 세지 않는다 — 영상 없는 채널이 영구 오탐이 되면 안 된다', async () => {
+    // 전용 경보 종류(`rss_empty`)는 alert_state 의 CHECK 때문에 마이그레이션 002 대상이고,
+    // `rss_fail` 을 재사용하면 진짜 가져오기 실패가 빈 피드에 묻힌다 (같은 디바운스 키).
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+
+    for (let i = 0; i < 6; i++) await h.poller.pollOnce(CH);
+    expect(h.alerts, '빈 피드가 rss_fail 경보를 울렸다').toHaveLength(0);
+    expect(h.poller.failStreaks()[0]?.streak).toBe(0);
   });
 });
