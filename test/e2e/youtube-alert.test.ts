@@ -79,6 +79,8 @@ interface FakeNet {
   feeds: Map<string, string | undefined>;
   feedStatus: Map<string, number>;
   hubRequests: { mode: string; topic: string; callback: string; secret: string }[];
+  /** 피드를 실제로 가져간 횟수. 폴 간격(백오프) 판정에 쓴다 */
+  feedHits: number;
   /** 허브가 구독 요청을 받아 주는가 */
   hubAccepts: boolean;
   /** 허브가 검증 GET 을 곧바로 보내는가 */
@@ -88,6 +90,7 @@ interface FakeNet {
 }
 
 interface Harness {
+  logs: { message: string; extra?: Record<string, unknown>; level?: string }[];
   clock: ManualClock;
   db: Db;
   ledger: AnnouncementLedgerRepo;
@@ -128,6 +131,7 @@ function build(opts: BuildOptions = {}): Harness {
     feeds: new Map([[CH, EMPTY_FEED]]),
     feedStatus: new Map(),
     hubRequests: [],
+    feedHits: 0,
     hubAccepts: true,
     autoVerify: opts.autoVerify ?? true,
     leaseSeconds: 'leaseSeconds' in opts ? opts.leaseSeconds : 4_000,
@@ -181,6 +185,7 @@ function build(opts: BuildOptions = {}): Harness {
     }
 
     const channelId = url.searchParams.get('channel_id') ?? '';
+    net.feedHits += 1;
     const body = net.feeds.get(channelId);
     if (body === undefined) throw new Error(`ENOTFOUND ${url.host}`);
     return new Response(body, {
@@ -283,6 +288,7 @@ function build(opts: BuildOptions = {}): Harness {
   if (getRoute === undefined || postRoute === undefined) throw new Error('라우트가 없습니다');
   routeRef.get = getRoute;
 
+  const logs: { message: string; extra?: Record<string, unknown>; level?: string }[] = [];
   const poller = createRssPoller({
     http,
     flow,
@@ -294,9 +300,13 @@ function build(opts: BuildOptions = {}): Harness {
     onAlert: (a) => {
       alerts.push(a);
     },
+    onLog: (message, extra, level) => {
+      logs.push({ message, ...(extra === undefined ? {} : { extra }), ...(level === undefined ? {} : { level }) });
+    },
   });
 
   return {
+    logs,
     clock,
     db,
     ledger,
@@ -1053,9 +1063,10 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     await flush();
     expect(h.poller.failStreaks()[0]?.streak).toBe(2); // 다음은 120초 뒤
 
-    // 상류가 회복된다
+    // 상류가 회복된다 — ★ **엔트리가 있는** 피드라야 회복이다.
+    //   빈 피드(200 · 0건)는 우리가 조여졌다는 신호이므로 성공으로 세지 않는다.
     h.net.feedStatus.delete(CH);
-    h.net.feeds.set(CH, EMPTY_FEED);
+    h.net.feeds.set(CH, fixture('push-single.xml'));
     h.clock.advance(120_000);
     await flush();
     expect(h.poller.failStreaks()[0]?.streak, '성공이 연속 실패를 리셋하지 않았다').toBe(0);
@@ -1099,5 +1110,110 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
     await h.websub.sweep();
     expect(h.net.hubRequests, '성공 후에도 백오프가 남아 있었다').toHaveLength(4);
+  });
+});
+
+describe('★★ 빈 피드는 "새 영상 없음" 이 아니다 — 조용히 넘어가지 않는다', () => {
+  it('엔트리 0건이면 warn 으로 남는다', async () => {
+    // 유튜브 채널 피드는 새 업로드가 없어도 최근 15건을 늘 담아 준다.
+    // 그러므로 0건은 정상 상태가 아니라 "가져오기가 사실상 실패했다" 는 뜻이다.
+    // 실제로 IP 가 조여졌을 때 200 인데 본문이 빈 형태로 왔다 (2026-09-10 · 09-14).
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+
+    const out = await h.poller.pollOnce(CH);
+    expect(out.ok && out.entries).toBe(0);
+
+    const warn = h.logs.filter((l) => l.level === 'warn' && l.message.includes('비어 있습니다'));
+    expect(warn, '빈 피드가 로그에 한 줄도 안 남았다').toHaveLength(1);
+    expect(warn[0]?.extra).toMatchObject({ channelId: CH });
+  });
+
+  it('★ 엔트리가 있으면 그 경고는 나오지 않는다', async () => {
+    const h = harness();
+    h.net.feeds.set(CH, fixture('push-single.xml'));
+
+    await h.poller.pollOnce(CH);
+    expect(h.logs.filter((l) => l.message.includes('비어 있습니다'))).toHaveLength(0);
+  });
+
+  it('★★ 그래도 실패로 세지 않는다 — 영상 없는 채널이 영구 오탐이 되면 안 된다', async () => {
+    // 전용 경보 종류(`rss_empty`)는 alert_state 의 CHECK 때문에 마이그레이션 002 대상이고,
+    // `rss_fail` 을 재사용하면 진짜 가져오기 실패가 빈 피드에 묻힌다 (같은 디바운스 키).
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+
+    for (let i = 0; i < 6; i++) await h.poller.pollOnce(CH);
+    expect(h.alerts, '빈 피드가 rss_fail 경보를 울렸다').toHaveLength(0);
+    expect(h.poller.failStreaks()[0]?.streak).toBe(0);
+  });
+});
+
+describe('★★ 빈 피드는 폴 백오프를 건너뛰지 않는다', () => {
+  // 자기 재예약 타이머라 예약된 콜백이 실제로 돌 틈을 준다 (위 백오프 블록과 같은 헬퍼).
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+  };
+
+  it('★★ 계속 비어 있으면 간격이 물린다 — 조여진 상태를 같은 속도로 두드리지 않는다', async () => {
+    // 2026-09-09 에 백오프를 넣어 막은 동작이 정확히 이것이다: 상류가 우리를 조이는데
+    // 고정 간격으로 계속 때려 그 상태를 스스로 연장하는 것.
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+    await h.poller.start();
+
+    // ★ 초기 예약은 물리지 않는다 — 첫 결과가 나오기 전에 이미 잡혀 있다.
+    //   실패 경로(위 블록)와 같은 성질이라 여기서도 2회차는 60초에 온다.
+    h.clock.advance(60_000);
+    await flush();
+    const twice = h.net.feedHits;
+    expect(twice, '2회차가 60초에 오지 않았다').toBeGreaterThan(1);
+
+    // ★★ 여기부터가 이 테스트의 요점 — 2회차도 비었으니 다음은 120초다.
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.net.feedHits, '빈 피드인데 60초 만에 또 두드렸다').toBe(twice);
+
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.net.feedHits, '120초가 지나도 폴이 오지 않았다').toBeGreaterThan(twice);
+
+    h.poller.stop();
+  });
+
+  it('★ 엔트리가 돌아오면 즉시 기본 간격으로 복귀한다', async () => {
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+    await h.poller.start();
+    h.clock.advance(120_000);
+    await flush();
+
+    h.net.feeds.set(CH, fixture('push-single.xml'));
+    h.clock.advance(120_000);
+    await flush();
+
+    const base = h.net.feedHits;
+    h.clock.advance(60_000);
+    await flush();
+    expect(h.net.feedHits, '회복 후에도 간격이 늘어난 채였다').toBeGreaterThan(base);
+
+    h.poller.stop();
+  });
+
+  it('★★ 로그는 전이할 때만 남는다 — §7 의 tail -20 을 같은 줄로 채우지 않는다', async () => {
+    const h = harness();
+    h.net.feeds.set(CH, EMPTY_FEED);
+
+    for (let i = 0; i < 5; i++) await h.poller.pollOnce(CH);
+    expect(h.logs.filter((l) => l.message.includes('비어 있습니다')), '폴마다 찍혔다').toHaveLength(1);
+
+    h.net.feeds.set(CH, fixture('push-single.xml'));
+    await h.poller.pollOnce(CH);
+    expect(h.logs.filter((l) => l.message.includes('정상으로 돌아왔습니다'))).toHaveLength(1);
+
+    // 다시 비면 새 전이라 한 번 더 남는다.
+    h.net.feeds.set(CH, EMPTY_FEED);
+    await h.poller.pollOnce(CH);
+    expect(h.logs.filter((l) => l.message.includes('비어 있습니다'))).toHaveLength(2);
   });
 });

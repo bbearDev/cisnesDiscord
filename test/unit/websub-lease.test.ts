@@ -157,6 +157,12 @@ describe('★★ 회당 타임아웃과 작업 예산은 짝이다', () => {
     expect(WEBSUB_BUDGET_MS).toBeGreaterThan(CALL_TIMEOUT_MS['websub-subscribe']);
   });
 
+  it('★ 예산이 실측 최악 응답(20초)보다 넉넉하다 — 아니면 503 을 받아 보지도 못한다', () => {
+    // 20초를 넘기면 허브가 503 을 준다. 그 응답을 **받아서 기록**할 수 있어야
+    // 다음 사람이 원인을 손으로 curl 해 찾지 않는다.
+    expect(CALL_TIMEOUT_MS['websub-subscribe']).toBeGreaterThan(20_000);
+  });
+
   it('★★ 스윕 한 바퀴가 **설계 상한 채널 수**로도 주기 안에 끝난다', () => {
     // ★ 2(지금 배포의 수)로 단언하면 계약이 아니라 현황을 고정한다. 스윕은 순차라
     //   실제 불변식은 `예산 × N < 주기` 이고, N 의 계약값은 `MAX_YOUTUBE_CHANNELS` 다.

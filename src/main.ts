@@ -1168,8 +1168,10 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     stuck: stuckWatch,
     pollSec: file.youtube.rssPollSec,
     onAlert: raiseStuck,
-    onLog: (message, extra) => {
-      logger.info(extra ?? {}, message);
+    onLog: (message, extra, level) => {
+      // ★ 빈 피드처럼 사람이 봐야 하는 상태는 warn 으로 올라온다 (런북 §7 이 훑는 축).
+      if (level === 'warn') logger.warn(extra ?? {}, message);
+      else logger.info(extra ?? {}, message);
     },
   });
 

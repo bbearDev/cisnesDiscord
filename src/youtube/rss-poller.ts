@@ -70,6 +70,9 @@ export function feedUrl(channelId: string): string {
  */
 export const RSS_CHANNEL_BUDGET_MS = 10_000;
 
+/** `onLog` 의 레벨. 기본은 `info` 다 */
+export type RssLogLevel = 'info' | 'warn';
+
 export type RssPollOutcome =
   | { ok: true; channelId: string; entries: number; skipped: number; flow: UploadFlowResult }
   | { ok: false; channelId: string; reason: string };
@@ -85,7 +88,12 @@ export interface RssPollerOptions {
   /** 설정 `youtube.rssPollSec` (기본 60) */
   pollSec: number;
   onAlert?: (a: StuckAlert) => void | Promise<void>;
-  onLog?: (message: string, extra?: Record<string, unknown>) => void;
+  /**
+   * ★ 세 번째 인자는 **로그 레벨**이다. 기본 `info` 이고 `warn` 은 사람이 봐야 하는
+   *   상태에만 쓴다 — 런북 §7 일상 점검이 `"level":[456]0` 으로 훑는 그 축이다.
+   *   레벨을 `extra` 에 담으면 pino 자신의 `level` 필드와 이름이 부딪친다.
+   */
+  onLog?: (message: string, extra?: Record<string, unknown>, level?: RssLogLevel) => void;
   /** 테스트 주입점 */
   feedUrlFor?: (channelId: string) => string;
 }
@@ -106,11 +114,18 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
   const { http, flow, channels, clock, stuck } = opts;
   const urlFor = opts.feedUrlFor ?? feedUrl;
   const known = new Map(opts.configured.map((c) => [c.channelId, c.label]));
+  /**
+   * 채널별 **연속 빈 피드** 횟수. 엔트리가 하나라도 오면 지운다.
+   *
+   * ★ 경보 카운터(`stuck-watch`)와 **별개다.** 이 값은 로그 전이 판정과 폴 간격에만
+   *   쓰이고 경보를 울리지 않는다 — 위 0건 처리 주석 참조.
+   */
+  const emptyStreak = new Map<string, number>();
   let timer: Disposable | undefined;
 
-  const log = (message: string, extra?: Record<string, unknown>): void => {
+  const log = (message: string, extra?: Record<string, unknown>, level?: RssLogLevel): void => {
     try {
-      opts.onLog?.(message, extra);
+      opts.onLog?.(message, extra, level ?? 'info');
     } catch {
       /* 로그가 폴을 죽이면 안 된다 (Principle 2) */
     }
@@ -155,6 +170,40 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
       await observe(channelId, true, at);
       log('rss 피드 파싱 실패', { channelId, reason });
       return { ok: false, channelId, reason };
+    }
+
+    /**
+     * ★★ **엔트리 0건은 "새 영상 없음" 이 아니다.**
+     *
+     *   유튜브 채널 피드는 새 업로드가 없어도 **최근 15건을 늘 담아** 돌려준다.
+     *   그러므로 0건은 정상 상태가 아니라 *"가져오기가 사실상 실패했다"* 는 뜻이다.
+     *   실제로 우리 IP 가 조여졌을 때 피드가 **200 인데 본문이 빈** 형태로 왔다
+     *   (2026-09-10 · 09-14 관측). `parseFeed` 는 성공하고 엔트리만 0이라, 예전에는
+     *   **로그 한 줄도 남지 않고** 조용히 "처리할 것 없음" 이 됐다.
+     *
+     * ★★★ **전이할 때만 찍는다.** 폴마다 찍으면 스로틀이 두어 시간 이어질 때 같은 줄이
+     *   수십 개 쌓여 런북 §7 의 `tail -20` 을 통째로 채운다 — warn 을 넣은 이유가
+     *   "§7 이 훑으니 사람 눈에 걸린다" 인데, 그 창에서 다른 경고를 밀어내면 자기 목적을
+     *   스스로 깬다.
+     *
+     * ★ 회복도 한 줄 남긴다. 시작만 있고 끝이 없으면 로그만 보고는 *"아직도 비어 있나"* 를
+     *   알 수 없다.
+     *
+     * ★★ `stuck-watch` 를 **쓰지 않는다.** 그쪽은 백오프와 경보 임계를 같이 굴리는데,
+     *   경보까지 켜지면 ① 영상이 하나도 없는 채널이 25분마다 영구 오탐이 되고
+     *   ② 전용 종류(`rss_empty`)는 `alert_state.alert_kind` CHECK 를 고쳐야 해
+     *   마이그레이션 002 대상이다(런북 §8-a). `rss_fail` 재사용은 같은 (scope, kind)
+     *   디바운스를 공유해 **진짜 가져오기 실패를 빈 피드가 가린다.**
+     *   그래서 여기서만 세는 별도 카운터를 둔다 — 경보는 안 울리고 폴 간격만 물린다.
+     */
+    if (parsed.entries.length === 0) {
+      const n = (emptyStreak.get(channelId) ?? 0) + 1;
+      emptyStreak.set(channelId, n);
+      if (n === 1) {
+        log('rss 피드가 비어 있습니다 — 스로틀 의심 (0건은 정상 상태가 아니다)', { channelId }, 'warn');
+      }
+    } else if (emptyStreak.delete(channelId)) {
+      log('rss 피드가 정상으로 돌아왔습니다', { channelId });
     }
 
     await observe(channelId, false, at);
@@ -202,7 +251,12 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
             const out = await pollAll();
             // ★ 한 채널이라도 성공하면 정상 속도로 돌아온다. 전부 실패할 때만 물린다 —
             //   채널 하나의 일시적 실패가 다른 채널의 감지까지 늦추면 안 된다.
-            const anyOk = out.some((o) => o.ok);
+            //
+            // ★★ **엔트리 0건은 성공으로 세지 않는다.** 0건은 우리가 조여졌다는 신호이고
+            //   (위 0건 처리 주석), 그것을 "정상" 으로 세면 이 백오프가 영영 안 걸린다.
+            //   그러면 스로틀이 이어지는 내내 기본 간격으로 계속 두드려 **막힌 상태를
+            //   스스로 연장한다** — 2026-09-09 에 이 백오프를 넣어 막은 바로 그 동작이다.
+            const anyOk = out.some((o) => o.ok && o.entries > 0);
             delaySec = anyOk
               ? opts.pollSec
               : Math.min(delaySec * RSS_BACKOFF_FACTOR, RSS_BACKOFF_MAX_SEC);
