@@ -32,9 +32,18 @@ import type { UploadFlow, UploadFlowResult } from './upload-flow.js';
 /**
  * 폴 대상 주소.
  *
- * ⚠️ WebSub 토픽(`/xml/feeds/videos.xml`)과 **경로가 다르다.** 둘 다 같은 피드를
- *   주지만 토픽은 허브가 문자열 정확 일치로 비교하는 식별자라 섞으면 안 된다
- *   (`websub-client.ts` 의 `TOPIC_URL_BASE` 주석 참조).
+ * ⚠️⚠️ WebSub 토픽(`/xml/feeds/videos.xml`)과 **경로도 내용도 다르다.**
+ *   예전 주석은 *"둘 다 같은 피드를 준다"* 고 적었는데 **틀렸다.** 실측(2026-09-15):
+ *
+ *   ```
+ *   /feeds/videos.xml?channel_id=…       27,866 bytes   entry=15   ← 진짜 피드
+ *   /xml/feeds/videos.xml?channel_id=…      463 bytes   entry= 0   ← 허브용 정적 스텁
+ *   ```
+ *
+ *   토픽 쪽은 *"This is a static file … should be used as a topic on the hub"* 이라는
+ *   안내와 `<link rel="hub">` 만 든 빈 문서다. **여기서 영상을 가져올 수 없다.**
+ *   섞으면 폴이 200 을 받고도 0건을 보고, 그것이 스로틀처럼 보인다 — 실제로 그렇게
+ *   오진한 적이 있다. 진단할 때도 반드시 이 주소로 확인할 것.
  */
 export const YOUTUBE_FEED_URL_BASE = 'https://www.youtube.com/feeds/videos.xml';
 

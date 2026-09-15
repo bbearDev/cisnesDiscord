@@ -37,10 +37,16 @@ export const YOUTUBE_HUB_URL = 'https://pubsubhubbub.appspot.com/subscribe';
 /**
  * 토픽 주소의 앞부분.
  *
- * ⚠️ RSS 폴에 쓰는 `https://www.youtube.com/feeds/videos.xml` 과 **경로가 다르다**
- *   (`/xml/feeds/` 대 `/feeds/`). 둘 다 같은 피드를 주지만 허브는 등록된 토픽
- *   문자열을 **정확히 일치**로 비교하므로, 여기를 폴 주소로 바꾸면 검증 GET 의
- *   `hub.topic` 이 우리 기대와 달라져 모든 검증이 404 로 거절된다.
+ * ⚠️⚠️ RSS 폴에 쓰는 `https://www.youtube.com/feeds/videos.xml` 과 **경로도 내용도
+ *   다르다** (`/xml/feeds/` 대 `/feeds/`). 예전 주석은 *"둘 다 같은 피드를 준다"* 고
+ *   적었는데 **틀렸다.** 이 주소는 허브에 등록할 **토픽 식별자**일 뿐, 내용은
+ *   *"This is a static file … should be used as a topic on the hub"* 안내와
+ *   `<link rel="hub">` 만 든 463바이트 스텁이다 (실측 2026-09-15). 영상이 들어 있지 않다.
+ *
+ * ★ 두 방향 모두 사고가 된다:
+ *   · 여기를 폴 주소로 쓰면 → 200 인데 0건. 스로틀로 오진하기 딱 좋다
+ *   · 폴 주소를 여기에 쓰면 → 허브가 토픽 문자열을 **정확히 일치**로 비교하므로
+ *     검증 GET 의 `hub.topic` 이 어긋나 모든 검증이 404 로 거절된다
  */
 export const TOPIC_URL_BASE = 'https://www.youtube.com/xml/feeds/videos.xml';
 

@@ -504,7 +504,9 @@ sqlite3 data/cisnes.db \
 확인:
 
 ```bash
-curl -sS "https://www.youtube.com/xml/feeds/videos.xml?channel_id=<채널ID>" | grep -c '<entry>'
+# ★★ 경로에 /xml/ 이 **없다.** `/xml/feeds/…` 는 WebSub 토픽 식별자이고 내용은
+#   463바이트짜리 빈 스텁이라, 그쪽으로 확인하면 멀쩡한 피드도 0건으로 보인다.
+curl -sS "https://www.youtube.com/feeds/videos.xml?channel_id=<채널ID>" | grep -c '<entry>'
 ```
 
 - **0** 이면 스로틀이다. 다른 회선(휴대폰 테더링 등)에서 같은 명령이 15를 주면 확정된다
