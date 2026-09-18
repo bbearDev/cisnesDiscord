@@ -1080,6 +1080,42 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     h.poller.stop();
   });
 
+  it('★★ renewNow 는 백오프를 지우고 즉시 친다 — 수동 갱신이 버는 것이 이것뿐이다', async () => {
+    // 자동 갱신은 이미 돈다. 이 함수가 버는 것은 백오프 상한(1시간)만큼의 시간뿐이다.
+    const h = harness();
+    h.net.hubAccepts = false;
+    h.net.autoVerify = false;
+
+    await h.websub.sweep();
+    expect(h.net.hubRequests).toHaveLength(1);
+
+    // 백오프 중이라 sweep 은 아무것도 안 한다.
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '백오프가 안 걸렸다').toHaveLength(1);
+
+    // renewNow 는 그 백오프를 지우고 지금 친다.
+    await h.websub.renewNow();
+    expect(h.net.hubRequests, 'renewNow 가 백오프를 뚫지 못했다').toHaveLength(2);
+  });
+
+  it('★★ renewNow 도 재구독 쿨다운은 지키지 않는다 — 검증 대기 중에 폭탄을 쏘지 않게', async () => {
+    // 202 를 받은 뒤 10분은 허브가 검증하는 창이다. 우리 백오프와 달리 이 쿨다운은
+    // 상류를 보호하는 것이라, 수동 갱신도 뚫지 않는다.
+    const h = harness();
+    h.net.autoVerify = false; // 202 는 받되 검증은 오지 않는다
+    await h.websub.sweep();
+    const afterFirst = h.net.hubRequests.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    await h.websub.renewNow();
+    expect(h.net.hubRequests, 'renewNow 가 재구독 쿨다운까지 뚫었다').toHaveLength(afterFirst);
+
+    // 쿨다운이 지나면 그때는 나간다.
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.renewNow();
+    expect(h.net.hubRequests.length).toBeGreaterThan(afterFirst);
+  });
+
   it('★★ 구독이 실패하면 재시도 간격이 벌어진다 — 재시도가 막힘을 유지시키지 않게', async () => {
     // 실측(2026-09-10)에서 이것이 없어 하루 414건이 나갔다. 상대는 우리 IP 를 이미
     // 간헐적으로 조이던 구글이라, 재시도가 막힌 상태를 **유지시키는 쪽**으로 일했다.

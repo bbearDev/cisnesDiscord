@@ -7,7 +7,10 @@ import {
   createSwappableAlertState,
   type AlertEvent,
 } from '../../src/runtime/alerts/ops-alert-service.js';
-import { SYSTEM_SCOPE } from '../../src/runtime/alerts/types.js';
+import {
+  DEBOUNCE_INTERVAL_OVERRIDE_MIN,
+  SYSTEM_SCOPE,
+} from '../../src/runtime/alerts/types.js';
 import {
   createDiscordNotifier,
   WEBHOOK_MAX_CONTENT,
@@ -241,5 +244,44 @@ describe('discord-webhook — 발송기', () => {
     });
     expect(await n.send('x')).toBe('failed');
     expect(reasons[0]).toContain('429');
+  });
+});
+
+describe('★★ 종류별 디바운스 재정의 — 유효기간이 긴 경보는 덜 운다', () => {
+  it('재정의가 없는 종류는 minIntervalMin 을 그대로 쓴다', async () => {
+    const { svc, clock } = make({ notifier: recordingNotifier(), minIntervalMin: 30 });
+    expect(await svc.raise('rss_fail', 'a')).toBe('sent');
+    clock.advance(29 * 60_000);
+    expect(await svc.raise('rss_fail', 'a')).toBe('suppressed');
+    clock.advance(2 * 60_000);
+    expect(await svc.raise('rss_fail', 'a')).toBe('sent');
+  });
+
+  it(`★★ websub_lease 는 ${String(DEBOUNCE_INTERVAL_OVERRIDE_MIN.websub_lease ?? 0)}분 창을 쓴다`, async () => {
+    // 리스 잔여 경보는 임계 아래 구간(리스 5일 × 20% ≈ 하루) 내내 참이라,
+    // 30분이면 하루 48번 오는데 첫 한 번 이후로는 새로 알려 주는 것이 없다.
+    const { svc, clock } = make({ notifier: recordingNotifier(), minIntervalMin: 30 });
+    expect(await svc.raise('websub_lease', 'a')).toBe('sent');
+
+    clock.advance(60 * 60_000); // 1시간 — 기본 창이었다면 벌써 다시 나갔다
+    expect(await svc.raise('websub_lease', 'a'), '재정의가 먹지 않았다').toBe('suppressed');
+
+    clock.advance(5 * 60 * 60_000 + 60_000); // 누적 6시간 초과
+    expect(await svc.raise('websub_lease', 'a')).toBe('sent');
+  });
+
+  it('★★ 디바운스를 끄면(minIntervalMin=0) 재정의도 함께 꺼진다', async () => {
+    // 운영자가 "전부 받겠다" 고 껐는데 특정 종류만 몰래 눌려 있으면 껐다는 사실이 거짓이 된다.
+    const { svc } = make({ notifier: recordingNotifier(), minIntervalMin: 0 });
+    expect(await svc.raise('websub_lease', 'a')).toBe('sent');
+    expect(await svc.raise('websub_lease', 'a')).toBe('sent');
+  });
+
+  it('★ 재정의는 종류별이다 — 다른 종류를 끌어들이지 않는다', async () => {
+    const { svc, clock } = make({ notifier: recordingNotifier(), minIntervalMin: 30 });
+    await svc.raise('websub_lease', 'a');
+    clock.advance(31 * 60_000);
+    expect(await svc.raise('websub_lease', 'a')).toBe('suppressed'); // 6시간 창
+    expect(await svc.raise('rss_fail', 'b')).toBe('sent'); // 30분 창 — 영향 없음
   });
 });

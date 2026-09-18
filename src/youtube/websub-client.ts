@@ -282,6 +282,19 @@ export interface WebSubClient {
   secretFor(channelId: string): string | undefined;
   /** 갱신·경보 판정 1회. 테스트와 주기 스윕이 같은 함수를 탄다 */
   sweep(): Promise<SweepOutcome>;
+  /**
+   * **운영자 수동 갱신** — 실패 백오프를 지우고 즉시 스윕한다.
+   *
+   * ★★ 자동 갱신은 이미 돌고 있다. 이 함수가 버는 것은 **백오프 상한(1시간)만큼의
+   *   시간**뿐이다 — 허브가 막 회복됐을 때 다음 시도를 기다리지 않고 지금 친다.
+   *   "자동이 안 되니 수동이 필요하다" 가 아니라 "자동이 최대 1시간 늦다" 이다.
+   *
+   * ★★ **`RESUBSCRIBE_COOLDOWN_MS` 는 지우지 않는다.** 그 쿨다운은 202 를 받은 뒤
+   *   검증을 기다리는 10분을 보호한다 — 그것까지 무시하면 허브가 검증하는 동안
+   *   운영자가 누를 때마다 재구독 폭탄이 나간다. 지우는 것은 **우리가 스스로 건
+   *   브레이크**뿐이다.
+   */
+  renewNow(): Promise<SweepOutcome>;
   /** 지표 스냅샷 */
   leaseRatios(): { channelId: string; ratio: number }[];
   stop(): void;
@@ -485,6 +498,12 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
 
     subscribe,
     sweep,
+
+    async renewNow(): Promise<SweepOutcome> {
+      // ★ 우리 백오프만 지운다. 상류 보호(쿨다운)는 sweep 안에서 그대로 걸린다.
+      nextAttemptAtMs.clear();
+      return sweep();
+    },
 
     verify(input): VerificationResult {
       if (!known.has(input.channelId)) {

@@ -28,6 +28,7 @@ import {
 import { createLinkCommand } from './discord/commands/link.js';
 import { createAuthGuard, type AuthGuard } from './discord/commands/guard.js';
 import { createStatusCommand } from './discord/commands/status.js';
+import { createWebSubRenewCommand } from './discord/commands/websub-renew.js';
 import { createUnlinkCommand } from './discord/commands/unlink.js';
 import type {
   Command,
@@ -1305,6 +1306,12 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       },
       panel: authPanel,
       clock,
+      onLog: commandLog,
+    }),
+    createWebSubRenewCommand({
+      websub,
+      clock,
+      labelFor: (channelId) => file.youtube.channels.find((c) => c.channelId === channelId)?.label,
       onLog: commandLog,
     }),
   ]) {
