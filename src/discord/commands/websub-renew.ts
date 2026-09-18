@@ -15,9 +15,16 @@ import type { CommandContext, CommandDefinition, CommandReply, SlashCommand } fr
  *   가 아니라 *"자동이 최대 1시간 늦다"* 이고, 이 문장이 이 파일의 존재 이유 전부다.
  *
  * ★ 실제 상황(2026-09-18): 허브(`pubsubhubbub.appspot.com`)가 20초 뒤 503 을 돌려주는
- *   장애가 며칠 이어졌다. 그동안 리스 잔여 경보가 30분마다 울렸는데 운영자가 할 수 있는
- *   일이 없었다 — 눌러도 503 이다. **이 명령은 허브가 회복된 뒤에만 값을 낸다.**
- *   그 사실을 응답 문구에도 적는다. 안 적으면 장애 중에 연타하게 된다.
+ *   상태가 며칠 이어졌다. 그동안 리스 잔여 경보가 30분마다 울렸는데 운영자가 할 수 있는
+ *   일이 없었다 — 눌러도 503 이다.
+ *
+ * ★★ **그런데 그 503 이 실패가 아니었다** (2026-09-19). 같은 요청을 두 채널에 보내니
+ *   응답은 둘 다 `503` 에 20.29초로 초 단위까지 같았는데 **한쪽은 2분 뒤 검증이 와서
+ *   5일짜리 리스가 붙었다.** 허브는 오류를 돌려주고도 뒤에서 구독을 처리한다.
+ *   그래서 이 명령은 허브가 "죽어 보이는" 동안에도 값을 낸다 — 누를 때마다 성사
+ *   확률이 있다. 대신 **"미정" 을 "실패" 라고 적으면 안 된다.** 붙는 중인 구독을
+ *   실패로 읽은 운영자는 연타하고, 그 연타가 2026-09-09 에 우리 IP 를 조이게 한
+ *   경로다. 응답 문구가 셋(성공·미정·실패)으로 갈린 이유가 이것이다.
  *
  * ★ `defer: true` — 갱신 1건의 예산이 45초이고 채널마다 순차라, 3초 상호작용 창을
  *   반드시 넘긴다.
@@ -52,7 +59,13 @@ export const WEBSUB_RENEW_COMMAND: CommandDefinition = {
  */
 export interface WebSubRenewPort {
   /** 백오프를 지우고 즉시 스윕. 결과 집계를 돌려준다 */
-  renewNow(): Promise<{ checked: number; renewed: number; renewFailed: number }>;
+  renewNow(): Promise<{
+    checked: number;
+    renewed: number;
+    /** 허브가 받았을 수도 있어 결과를 모르는 시도 — "실패" 와 다른 말이다 */
+    renewPending: number;
+    renewFailed: number;
+  }>;
   /** 채널별 리스 잔여 0..1 */
   leaseRatios(): { channelId: string; ratio: number }[];
 }
@@ -132,6 +145,7 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
           by: ctx.userId,
           checked: out.checked,
           renewed: out.renewed,
+          renewPending: out.renewPending,
           renewFailed: out.renewFailed,
         });
 
@@ -142,23 +156,46 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
          *   적으면 아무 문제 없는 상태를 운영자가 실패로 읽고 다시 누른다 —
          *   이 명령의 존재 이유가 *"누르면 무엇이 됐는지 정확히 알리기"* 인데 그 반대가 된다.
          */
-        const attempted = out.renewed + out.renewFailed;
+        const attempted = out.renewed + out.renewPending + out.renewFailed;
+
+        /**
+         * ★★ **"미정" 을 "실패" 라고 적지 않는다.** 허브는 `503` 을 돌려주면서도 뒤에서
+         *   구독을 처리하고 몇 분 뒤 검증을 보낸다 (실측 2026-09-19 — 503 을 받은 요청이
+         *   2분 뒤 붙었다). 그것을 "실패" 로 적으면 운영자는 **이미 붙는 중인 구독을**
+         *   실패로 읽고 연타한다. 그 연타가 정확히 2026-09-09 에 우리 IP 가 구글에
+         *   조여진 경로다. 미정에는 *"기다리면 된다"* 가 답이다.
+         */
         const head =
           attempted === 0
             ? `지금은 갱신할 구독이 없습니다 — 확인 ${String(out.checked)}건 (잔여가 50% 를 넘거나, 최근 갱신 뒤 10분 검증 창 안입니다)`
-            : out.renewFailed === 0
+            : out.renewFailed === 0 && out.renewPending === 0
               ? `구독 갱신을 시도했습니다 — 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건`
-              : `구독 갱신을 시도했지만 **${String(out.renewFailed)}건이 실패**했습니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`;
+              : out.renewFailed === 0
+                ? `구독 갱신을 요청했고 **${String(out.renewPending)}건은 결과를 기다리는 중**입니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`
+                : `구독 갱신을 시도했지만 **${String(out.renewFailed)}건이 실패**했습니다 (미정 ${String(out.renewPending)}건 / 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`;
 
-        const tail =
+        const pendingTail =
+          out.renewPending === 0
+            ? []
+            : [
+                '',
+                '허브가 접수 여부를 알려주지 않았습니다. **실패가 아닙니다** —',
+                '허브는 오류를 돌려주고도 뒤에서 구독을 처리하는 일이 있고, 그때는',
+                '몇 분 안에 검증이 도착해 **저절로 완료**됩니다. 다시 누르지 마시고',
+                '`/구독갱신` 으로 잔여가 올라갔는지 10분쯤 뒤에 확인해 주십시오.',
+              ];
+
+        const failTail =
           out.renewFailed === 0
             ? []
             : [
                 '',
                 '실패가 이어지면 **허브(`pubsubhubbub.appspot.com`) 쪽 장애**일 수 있습니다.',
-                '그때는 눌러도 같은 결과이고, 자동 재시도가 최대 1시간 간격으로 계속 돕니다 —',
+                '그때는 눌러도 같은 결과이고, 자동 재시도가 계속 돕니다 —',
                 '허브가 회복되면 사람이 누르지 않아도 붙습니다.',
               ];
+
+        const tail = [...pendingTail, ...failTail];
 
         return {
           ephemeral: true,

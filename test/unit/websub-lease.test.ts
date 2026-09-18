@@ -8,7 +8,10 @@ import {
   LEASE_RENEW_AT_ELAPSED_RATIO,
   WEBSUB_BACKOFF_MAX_SEC,
   WEBSUB_BUDGET_MS,
+  WEBSUB_PENDING_BACKOFF_MAX_SEC,
   WEBSUB_SWEEP_SEC,
+  RESUBSCRIBE_COOLDOWN_MS,
+  hubMayHaveAccepted,
   renewBackoffMs,
   TOPIC_URL_BASE,
   YOUTUBE_HUB_URL,
@@ -149,6 +152,65 @@ describe('★★ 구독 재시도 백오프 — 재시도가 막힘을 유지시
 
   it('★ 첫 실패의 대기는 스윕 주기보다 길다 — 아니면 게이트가 아무 일도 안 한다', () => {
     expect(renewBackoffMs(1, WEBSUB_SWEEP_SEC)).toBeGreaterThan(WEBSUB_SWEEP_SEC * 1_000);
+  });
+
+  it('★★ 미정 상한은 확정 실패보다 짧다 — 성사 가능한 시도를 1시간씩 버리면 안 된다', () => {
+    expect(WEBSUB_PENDING_BACKOFF_MAX_SEC).toBeLessThan(WEBSUB_BACKOFF_MAX_SEC);
+    expect(renewBackoffMs(100, 300, WEBSUB_PENDING_BACKOFF_MAX_SEC)).toBe(
+      WEBSUB_PENDING_BACKOFF_MAX_SEC * 1_000,
+    );
+    // 같은 스트릭인데 미정 쪽이 더 빨리 다시 시도한다 — 그것이 이 상수의 존재 이유다
+    expect(renewBackoffMs(100, 300, WEBSUB_PENDING_BACKOFF_MAX_SEC)).toBeLessThan(
+      renewBackoffMs(100, 300),
+    );
+  });
+
+  it('★★ 미정 상한도 검증 대기 창보다는 길다 — 창 안에 또 두드리면 창이 무의미하다', () => {
+    // 미정은 `markRequested` 로 10분 창이 열린다. 백오프 상한이 그보다 짧으면
+    // 백오프가 먼저 풀려도 쿨다운에 막히므로, 상한은 창 이상이어야 뜻이 있다.
+    expect(WEBSUB_PENDING_BACKOFF_MAX_SEC * 1_000).toBeGreaterThanOrEqual(RESUBSCRIBE_COOLDOWN_MS);
+  });
+
+  it('★ 기본 상한은 확정 실패 쪽이다 — 새 호출자가 덜 두드리는 쪽으로 틀리게', () => {
+    expect(renewBackoffMs(100, 300)).toBe(WEBSUB_BACKOFF_MAX_SEC * 1_000);
+  });
+});
+
+/**
+ * ★★ 이 블록이 지키는 문장: **`ok === false` 는 "실패했다" 가 아니라 "모른다" 일 수 있다.**
+ *
+ *   실측 2026-09-19 — 허브가 20초를 끌다 `503 Transient error` 를 돌려준 요청이
+ *   2분 뒤 검증 GET 을 받아 5일짜리 리스로 성사됐다. 같은 요청을 두 채널에 보냈는데
+ *   응답은 초 단위까지 같았고 결과만 갈렸다. 허브는 확률적으로 처리한다.
+ */
+describe('★★ hubMayHaveAccepted — 503 을 실패로 단정하지 않는다', () => {
+  it('5xx 는 미정이다 — 허브가 받아서 뒤에서 처리 중일 수 있다', () => {
+    expect(hubMayHaveAccepted({ kind: 'http', status: 503 })).toBe(true);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 500 })).toBe(true);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 502 })).toBe(true);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 599 })).toBe(true);
+  });
+
+  it('★★ 4xx 는 확정 실패다 — 거절된 요청까지 기다리면 영영 안 붙는 상태를 숨긴다', () => {
+    expect(hubMayHaveAccepted({ kind: 'http', status: 400 })).toBe(false);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 403 })).toBe(false);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 404 })).toBe(false);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 429 })).toBe(false);
+    expect(hubMayHaveAccepted({ kind: 'http', status: 499 })).toBe(false);
+  });
+
+  it('★ 타임아웃·예산 초과는 미정이다 — 우리가 끊어도 허브는 계속 돈다', () => {
+    expect(hubMayHaveAccepted({ kind: 'timeout' })).toBe(true);
+    expect(hubMayHaveAccepted({ kind: 'budget' })).toBe(true);
+  });
+
+  it('★ 네트워크 오류는 확정 실패다 — 요청이 닿지 않았다', () => {
+    expect(hubMayHaveAccepted({ kind: 'network' })).toBe(false);
+    expect(hubMayHaveAccepted({ kind: 'not-text' })).toBe(false);
+  });
+
+  it('★ status 를 모르는 http 는 미정으로 치지 않는다 — 근거 없이 기다리게 된다', () => {
+    expect(hubMayHaveAccepted({ kind: 'http', status: undefined })).toBe(false);
   });
 });
 

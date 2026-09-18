@@ -41,7 +41,15 @@ export interface WebSubSubRepo {
   ensure(channelId: string, secret: string): WebSubSubRow;
   get(channelId: string): WebSubSubRow | undefined;
   list(): WebSubSubRow[];
-  /** 구독 요청을 보냈다 (허브가 202 로 받았다). 검증은 아직이다 */
+  /**
+   * 구독 요청이 **허브에 닿았다.** 검증은 아직이다.
+   *
+   * ★ 202 만 뜻하지 않는다. 허브가 `5xx` 를 돌려주거나 아예 응답하지 않아도 **받아서
+   *   처리했을 수 있고**, 실제로 503 을 받은 요청이 2분 뒤 검증된 관측이 있다
+   *   (2026-09-19 · `websub-client.ts` 의 `hubMayHaveAccepted`). 그래서 그 경우에도
+   *   여기를 찍는다 — `subscribed_at` 은 *"확정됐다"* 가 아니라 *"기다릴 이유가
+   *   생겼다"* 는 표시이고, `RESUBSCRIBE_COOLDOWN_MS` 가 그것을 읽어 중복 요청을 막는다.
+   */
   markRequested(channelId: string, at: string): void;
   /** ★ 검증 콜백에서 받은 리스를 기록한다. `leaseSeconds` 를 모르면 둘 다 NULL 이다 */
   recordLease(channelId: string, leaseSeconds: number | undefined, expiresAt: string | undefined): void;
