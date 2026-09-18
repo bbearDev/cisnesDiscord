@@ -118,6 +118,11 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
       running = true;
       lastRunAtMs = now;
       try {
+        /**
+         * ★ `Command.execute` 는 **절대 던지지 않기로** 돼 있다 (`types.ts`).
+         *   `main.ts` 의 `runCommand` 가 안전망을 두지만 그건 계약 위반을 덮는 자리이지
+         *   계약을 대신하는 자리가 아니다 — 여기서 잡아 사유를 사람 말로 돌려준다.
+         */
         const out = await deps.websub.renewNow();
         const lines = deps.websub
           .leaseRatios()
@@ -130,10 +135,20 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
           renewFailed: out.renewFailed,
         });
 
+        /**
+         * ★★ **"시도한 것이 없다" 와 "시도했는데 0건 성공" 은 다른 말이다.**
+         *   스윕은 갱신 시점이 아직 아니거나(잔여 50% 초과) 재구독 쿨다운(202 뒤 10분)에
+         *   걸리면 **시도 자체를 안 하고** `checked` 만 올린다. 그때 "성공 0건" 이라고
+         *   적으면 아무 문제 없는 상태를 운영자가 실패로 읽고 다시 누른다 —
+         *   이 명령의 존재 이유가 *"누르면 무엇이 됐는지 정확히 알리기"* 인데 그 반대가 된다.
+         */
+        const attempted = out.renewed + out.renewFailed;
         const head =
-          out.renewFailed === 0
-            ? `구독 갱신을 시도했습니다 — 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건`
-            : `구독 갱신을 시도했지만 **${String(out.renewFailed)}건이 실패**했습니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`;
+          attempted === 0
+            ? `지금은 갱신할 구독이 없습니다 — 확인 ${String(out.checked)}건 (잔여가 50% 를 넘거나, 최근 갱신 뒤 10분 검증 창 안입니다)`
+            : out.renewFailed === 0
+              ? `구독 갱신을 시도했습니다 — 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건`
+              : `구독 갱신을 시도했지만 **${String(out.renewFailed)}건이 실패**했습니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`;
 
         const tail =
           out.renewFailed === 0
@@ -148,6 +163,17 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
         return {
           ephemeral: true,
           content: [head, ...(lines.length === 0 ? [] : ['', ...lines]), ...tail].join('\n'),
+        };
+      } catch (e: unknown) {
+        const detail = e instanceof Error ? e.message : String(e);
+        log('구독 갱신 수동 시도 실패', { by: ctx.userId, detail });
+        return {
+          ephemeral: true,
+          content: [
+            '구독 갱신을 시도하다 오류가 났습니다.',
+            '자동 재시도는 계속 돌고 있습니다 — 잠시 후 다시 시도해 주십시오.',
+            `사유: ${detail.slice(0, 200)}`,
+          ].join('\n'),
         };
       } finally {
         // ★ `finally` 로 푼다. 예외가 나면 플래그가 켜진 채 남아 **명령이 영구히 잠긴다** —

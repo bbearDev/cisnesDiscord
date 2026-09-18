@@ -551,7 +551,7 @@ curl -sS "https://www.youtube.com/feeds/videos.xml?channel_id=<채널ID>" | grep
 | **1** | **단일 길드 배포가 전제다** — `verification_sessions` 에 `guild_id` 컬럼이 없어 OAuth 콜백이 세션만으로 어느 서버인지 알 수 없다 | `guild_config` 에서 해석한다. 설정된 길드가 없으면 **인증을 진행하지 않고 실패**시킨다(길드를 추측하지 않는다) | `002` 로 `verification_sessions.guild_id` 추가 |
 | **2** | **AD-3 수동 승인 미구현** — `account_links.verified_by` 컬럼이 없다 | chzzkbot 다운 시 신규 온보딩이 멈춘다 (§4-6) | `002` 로 `account_links.verified_by` 추가 + 명령어 구현 |
 | **3** | **"보내지 않고 종결" 을 담을 칸이 없다** — `announcement_ledger` 에 `suppressed_at` 이 없다 | `announced_at` 을 채우고 `message_id` 를 **비워** 표현한다 (아래) | `002` 로 `suppressed_at`·`suppressed_reason` 추가 |
-| **4-a** | **`websub_lease` 경보가 30분마다 운다** — 임계 아래 구간이 하루라 48번 온다 | `DEBOUNCE_INTERVAL_OVERRIDE_MIN` 으로 이 종류만 6시간 창 (코드 상수) | 종류별 간격을 설정으로 뺄지는 필요해질 때 |
+| **4-a** | **`websub_lease` 경보가 30분마다 운다** — 임계 아래 구간이 하루라 48번 온다 | `DEBOUNCE_INTERVAL_OVERRIDE_MIN` 으로 이 종류만 6시간 창 (코드 상수). ★ 그래서 이 경보에 붙는 *"억제된 동일 경보 N건"* 은 **70건 안팎**이다(6시간 ÷ 스윕 5분) — 다른 경보의 5~6건과 자릿수가 다른 것이 정상이다 | 종류별 간격을 설정으로 뺄지는 필요해질 때 |
 | **4** | **빈 RSS 피드 전용 경보가 없다** — `alert_state.alert_kind` CHECK 에 `rss_empty` 가 없다 | warn 로그로만 남긴다(§7 이 훑는다). `rss_fail` 재사용은 **하지 않는다** — 같은 (scope, kind) 디바운스라 진짜 가져오기 실패가 묻힌다 | `002` 로 `rss_empty` 를 CHECK 에 추가 |
 
 > ★ **추측하지 않고 실패하는 쪽을 택한 이유.** 길드가 하나뿐인 배포에서 "아무 길드나

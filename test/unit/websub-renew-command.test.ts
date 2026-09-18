@@ -114,8 +114,16 @@ describe('★★ 연타로 허브를 두드리지 않는다', () => {
   });
 });
 
-describe('★★ 예외가 나도 명령이 잠기지 않는다', () => {
-  it('renewNow 가 던져도 다음 호출이 된다', async () => {
+describe('★★ 예외가 나도 던지지 않고, 잠기지도 않는다', () => {
+  it('★★ renewNow 가 던져도 execute 는 던지지 않는다 — Command 계약이다', async () => {
+    const { cmd } = make({ renewNow: () => Promise.reject(new Error('boom')) });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('오류가 났습니다');
+    expect(r.content, '자동 재시도가 돈다는 사실을 안 알렸다').toContain('자동 재시도');
+    expect(r.content).toContain('boom');
+  });
+
+  it('예외 뒤에도 다음 호출이 된다 (겹침 플래그가 풀린다)', async () => {
     let shouldThrow = true;
     let calls = 0;
     const { cmd, clock } = make({
@@ -126,7 +134,7 @@ describe('★★ 예외가 나도 명령이 잠기지 않는다', () => {
       },
     });
 
-    await expect(cmd.execute(OPERATOR)).rejects.toThrow('boom');
+    await cmd.execute(OPERATOR);
     shouldThrow = false;
     clock.advance(WEBSUB_RENEW_COOLDOWN_MS + 1_000);
     await cmd.execute(OPERATOR);
@@ -142,6 +150,17 @@ describe('응답 문구', () => {
     expect(r.content).toContain('시스네 — 잔여 93%');
     expect(r.content).toContain('UC_B — 잔여 8%');
     expect(r.ephemeral).toBe(true);
+  });
+
+  it('★★ 갱신할 게 없으면 "없다" 고 한다 — "성공 0건" 은 실패처럼 읽힌다', async () => {
+    // 잔여 50% 초과이거나 재구독 쿨다운 안이면 스윕은 시도 자체를 안 하고 checked 만 올린다.
+    // 아무 문제 없는 상태인데 "성공 0건" 이라 적으면 운영자가 실패로 읽고 다시 누른다.
+    const { cmd } = make({
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewFailed: 0 }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('갱신할 구독이 없습니다');
+    expect(r.content, '멀쩡한 상태에 허브 장애 안내를 붙였다').not.toContain('허브');
   });
 
   it('★★ 실패하면 "눌러도 같다" 를 말한다 — 안 적으면 장애 중에 연타한다', async () => {
