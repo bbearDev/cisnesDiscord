@@ -11,7 +11,7 @@ import {
   WEBSUB_PENDING_BACKOFF_MAX_SEC,
   WEBSUB_SWEEP_SEC,
   RESUBSCRIBE_COOLDOWN_MS,
-  hubMayHaveAccepted,
+  hubDelivery,
   renewBackoffMs,
   TOPIC_URL_BASE,
   YOUTUBE_HUB_URL,
@@ -183,34 +183,47 @@ describe('★★ 구독 재시도 백오프 — 재시도가 막힘을 유지시
  *   2분 뒤 검증 GET 을 받아 5일짜리 리스로 성사됐다. 같은 요청을 두 채널에 보냈는데
  *   응답은 초 단위까지 같았고 결과만 갈렸다. 허브는 확률적으로 처리한다.
  */
-describe('★★ hubMayHaveAccepted — 503 을 실패로 단정하지 않는다', () => {
-  it('5xx 는 미정이다 — 허브가 받아서 뒤에서 처리 중일 수 있다', () => {
-    expect(hubMayHaveAccepted({ kind: 'http', status: 503 })).toBe(true);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 500 })).toBe(true);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 502 })).toBe(true);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 599 })).toBe(true);
+describe('★★ hubDelivery — 503 을 실패로 단정하지 않는다', () => {
+  it('5xx 만 may-be-accepted 다 — 허브가 받아서 뒤에서 처리 중일 수 있다', () => {
+    expect(hubDelivery({ kind: 'http', status: 503 })).toBe('may-be-accepted');
+    expect(hubDelivery({ kind: 'http', status: 500 })).toBe('may-be-accepted');
+    expect(hubDelivery({ kind: 'http', status: 502 })).toBe('may-be-accepted');
+    expect(hubDelivery({ kind: 'http', status: 599 })).toBe('may-be-accepted');
   });
 
-  it('★★ 4xx 는 확정 실패다 — 거절된 요청까지 기다리면 영영 안 붙는 상태를 숨긴다', () => {
-    expect(hubMayHaveAccepted({ kind: 'http', status: 400 })).toBe(false);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 403 })).toBe(false);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 404 })).toBe(false);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 429 })).toBe(false);
-    expect(hubMayHaveAccepted({ kind: 'http', status: 499 })).toBe(false);
+  it('★★ 4xx 는 거절이다 — 거절된 요청까지 기다리면 영영 안 붙는 상태를 숨긴다', () => {
+    expect(hubDelivery({ kind: 'http', status: 400 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 403 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 404 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 429 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 499 })).toBe('rejected');
   });
 
-  it('★ 타임아웃·예산 초과는 미정이다 — 우리가 끊어도 허브는 계속 돈다', () => {
-    expect(hubMayHaveAccepted({ kind: 'timeout' })).toBe(true);
-    expect(hubMayHaveAccepted({ kind: 'budget' })).toBe(true);
+  it('★★ 타임아웃은 no-answer 다 — 닿았는지 모를 뿐, 곧 붙는다는 뜻이 아니다', () => {
+    // 이 구분이 30분 상한과 "저절로 완료" 문구를 5xx 에만 묶는다. 무응답은 오히려
+    // 우리가 조여지고 있다는 신호(2026-09-10)라 덜 두드려야 한다.
+    expect(hubDelivery({ kind: 'timeout' })).toBe('no-answer');
   });
 
-  it('★ 네트워크 오류는 확정 실패다 — 요청이 닿지 않았다', () => {
-    expect(hubMayHaveAccepted({ kind: 'network' })).toBe(false);
-    expect(hubMayHaveAccepted({ kind: 'not-text' })).toBe(false);
+  /**
+   * ★★ `budget` 은 **거절**이다. 예산 소진은 두 경로인데 둘 다 기다릴 이유가 없다:
+   *   `remaining <= 0` 은 요청을 보내지도 않은 것이고(`http-budget.ts` 의
+   *   `http-budget-wiring.test.ts` 가 `expect(spy).not.toHaveBeenCalled()` 로 못 박는다),
+   *   나머지 하나는 **429 의 `Retry-After` 가 예산을 넘긴 경우** — 허브가 속도를
+   *   줄이라고 명시한 것이다. 이것을 "기다리면 붙는다" 로 접으면 오지 않을 검증을
+   *   기다리게 하면서 30분마다 두드린다.
+   */
+  it('★★ 예산 초과는 거절이다 — 미전송이거나 429 인데, 둘 다 기다릴 이유가 없다', () => {
+    expect(hubDelivery({ kind: 'budget' })).toBe('rejected');
+  });
+
+  it('★ 네트워크 오류는 거절이다 — 요청이 닿지 않았다', () => {
+    expect(hubDelivery({ kind: 'network' })).toBe('rejected');
+    expect(hubDelivery({ kind: 'not-text' })).toBe('rejected');
   });
 
   it('★ status 를 모르는 http 는 미정으로 치지 않는다 — 근거 없이 기다리게 된다', () => {
-    expect(hubMayHaveAccepted({ kind: 'http', status: undefined })).toBe(false);
+    expect(hubDelivery({ kind: 'http', status: undefined })).toBe('rejected');
   });
 });
 

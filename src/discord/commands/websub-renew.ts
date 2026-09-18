@@ -7,12 +7,13 @@ import type { CommandContext, CommandDefinition, CommandReply, SlashCommand } fr
  * `/구독갱신` — 운영자가 WebSub 구독 갱신을 지금 시도한다.
  *
  * ★★ **자동 갱신은 이미 돌고 있다.** 스윕이 5분마다 판정하고, 실패하면 백오프가
- *   2배씩 벌어져 상한 1시간이다. 만료 뒤에도 멈추지 않는다 — 허브가 살아나면
+ *   2배씩 벌어진다(확정 실패 상한 1시간 / `5xx` 상한 30분).
+ *   만료 뒤에도 멈추지 않는다 — 허브가 살아나면
  *   사람이 아무것도 안 해도 붙는다.
  *
  *   그래서 이 명령이 버는 것은 **백오프 상한만큼의 시간**뿐이다. 허브가 막 회복됐을 때
- *   다음 시도를 최대 1시간 기다리는 대신 지금 친다. *"자동이 안 되니 수동이 필요하다"*
- *   가 아니라 *"자동이 최대 1시간 늦다"* 이고, 이 문장이 이 파일의 존재 이유 전부다.
+ *   다음 시도를 그만큼 기다리는 대신 지금 친다. *"자동이 안 되니 수동이 필요하다"*
+ *   가 아니라 *"자동이 그만큼 늦다"* 이고, 이 문장이 이 파일의 존재 이유 전부다.
  *
  * ★ 실제 상황(2026-09-18): 허브(`pubsubhubbub.appspot.com`)가 20초 뒤 503 을 돌려주는
  *   상태가 며칠 이어졌다. 그동안 리스 잔여 경보가 30분마다 울렸는데 운영자가 할 수 있는
@@ -65,6 +66,8 @@ export interface WebSubRenewPort {
     /** 허브가 받았을 수도 있어 결과를 모르는 시도 — "실패" 와 다른 말이다 */
     renewPending: number;
     renewFailed: number;
+    /** 갱신할 때는 됐지만 **앞선 요청의 검증을 기다리느라** 시도하지 않은 채널 수 */
+    skippedCooldown: number;
   }>;
   /** 채널별 리스 잔여 0..1 */
   leaseRatios(): { channelId: string; ratio: number }[];
@@ -165,10 +168,19 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
          *   실패로 읽고 연타한다. 그 연타가 정확히 2026-09-09 에 우리 IP 가 구글에
          *   조여진 경로다. 미정에는 *"기다리면 된다"* 가 답이다.
          */
+        /**
+         * ★★ **"할 게 없었다" 와 "기다리는 중이라 안 했다" 를 가른다.**
+         *   앞선 요청이 미정으로 끝나면 검증 대기 창(10분)이 열리고, 그 안에서 누르면
+         *   시도가 **0건**이 된다. 그것을 *"갱신할 구독이 없습니다"* 라고만 적으면
+         *   바로 아래 `잔여 0%` 와 나란히 붙어, 운영자는 **아무도 아무것도 안 하고
+         *   있다**고 읽는다 — 실제로는 허브의 답을 기다리는 중이다.
+         */
         const head =
-          attempted === 0
-            ? `지금은 갱신할 구독이 없습니다 — 확인 ${String(out.checked)}건 (잔여가 50% 를 넘거나, 최근 갱신 뒤 10분 검증 창 안입니다)`
-            : out.renewFailed === 0 && out.renewPending === 0
+          attempted === 0 && out.skippedCooldown > 0
+            ? `앞선 요청의 검증을 기다리는 중입니다 — ${String(out.skippedCooldown)}건 (아직 누를 때가 아닙니다)`
+            : attempted === 0
+              ? `지금은 갱신할 구독이 없습니다 — 확인 ${String(out.checked)}건 (잔여가 50% 를 넘습니다)`
+              : out.renewFailed === 0 && out.renewPending === 0
               ? `구독 갱신을 시도했습니다 — 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건`
               : out.renewFailed === 0
                 ? `구독 갱신을 요청했고 **${String(out.renewPending)}건은 결과를 기다리는 중**입니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`

@@ -496,8 +496,8 @@ sqlite3 data/cisnes.db \
 허브가 살아나면 사람이 아무것도 안 해도 붙는다.
 
 > ★★ 그래서 이 명령이 버는 것은 **백오프 상한만큼의 시간**뿐이다 — 다음 시도를
-> 최대 1시간 기다리는 대신 지금 친다. *"자동이 안 되니 수동이 필요하다"* 가
-> 아니라 *"자동이 최대 1시간 늦다"* 이다.
+> 그만큼 기다리는 대신 지금 친다. *"자동이 안 되니 수동이 필요하다"* 가
+> 아니라 *"자동이 그만큼 늦다"* 이다 — 확정 실패면 최대 1시간, `5xx` 면 최대 30분.
 
 #### ⚠️⚠️ 허브의 `503` 은 "장애" 가 아니라 **"모른다"** 다 (실측 2026-09-19)
 
@@ -526,7 +526,7 @@ ssh cubeat "sqlite3 -header -column ~/git/cisnesDiscord/data/cisnes.db \
 
 ```bash
 # 검증이 실제로 도착했나 — 이 줄이 나오면 붙은 것이다
-ssh cubeat "grep -h 검증됐습니다 ~/git/cisnesDiscord/data/logs/cisnes.\$(date +%F).*.log | tail -3"
+ssh cubeat "grep -h '구독이 검증됐습니다' ~/git/cisnesDiscord/data/logs/cisnes.\$(date +%F).*.log | tail -3"
 ```
 
 > ★ 허브 자체가 죽었는지 보려면 루트를 친다. 여기가 `200` 이면 허브는 살아 있고,

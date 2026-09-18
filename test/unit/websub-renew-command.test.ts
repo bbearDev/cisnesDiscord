@@ -29,9 +29,10 @@ function port(over: Partial<WebSubRenewPort> = {}): WebSubRenewPort & { calls: n
       renewed: number;
       renewPending: number;
       renewFailed: number;
+      skippedCooldown: number;
     }> => {
       p.calls += 1;
-      return Promise.resolve({ checked: 2, renewed: 2, renewPending: 0, renewFailed: 0 });
+      return Promise.resolve({ checked: 2, renewed: 2, renewPending: 0, renewFailed: 0, skippedCooldown: 0 });
     },
     leaseRatios: (): { channelId: string; ratio: number }[] => [
       { channelId: 'UC_A', ratio: 0.93 },
@@ -107,7 +108,7 @@ describe('★★ 연타로 허브를 두드리지 않는다', () => {
     const { cmd } = make({
       renewNow: async () => {
         await gate;
-        return { checked: 1, renewed: 1, renewPending: 0, renewFailed: 0 };
+        return { checked: 1, renewed: 1, renewPending: 0, renewFailed: 0, skippedCooldown: 0 };
       },
     });
 
@@ -135,7 +136,7 @@ describe('★★ 예외가 나도 던지지 않고, 잠기지도 않는다', () 
       renewNow: () => {
         calls += 1;
         if (shouldThrow) return Promise.reject(new Error('boom'));
-        return Promise.resolve({ checked: 1, renewed: 1, renewPending: 0, renewFailed: 0 });
+        return Promise.resolve({ checked: 1, renewed: 1, renewPending: 0, renewFailed: 0, skippedCooldown: 0 });
       },
     });
 
@@ -161,7 +162,7 @@ describe('응답 문구', () => {
     // 잔여 50% 초과이거나 재구독 쿨다운 안이면 스윕은 시도 자체를 안 하고 checked 만 올린다.
     // 아무 문제 없는 상태인데 "성공 0건" 이라 적으면 운영자가 실패로 읽고 다시 누른다.
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 0, renewFailed: 0 }),
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 0, renewFailed: 0, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
     expect(r.content).toContain('갱신할 구독이 없습니다');
@@ -175,7 +176,7 @@ describe('응답 문구', () => {
    */
   it('★★ 미정은 "실패" 가 아니라 "기다리는 중" 이라고 적는다', async () => {
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 2, renewFailed: 0 }),
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 2, renewFailed: 0, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
 
@@ -199,7 +200,7 @@ describe('응답 문구', () => {
 
   it('★ 미정과 실패가 섞이면 둘 다 센다 — 한쪽을 삼키면 진단이 어긋난다', async () => {
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 3, renewed: 0, renewPending: 1, renewFailed: 2 }),
+      renewNow: () => Promise.resolve({ checked: 3, renewed: 0, renewPending: 1, renewFailed: 2, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
     expect(r.content).toContain('2건이 실패');
@@ -211,15 +212,52 @@ describe('응답 문구', () => {
   it('★★ 미정만 있을 때 "갱신할 구독이 없습니다" 로 새지 않는다 — 시도는 있었다', async () => {
     // attempted 계산에서 renewPending 을 빠뜨리면 이 경로가 "없습니다" 로 샌다.
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 2, renewFailed: 0 }),
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 2, renewFailed: 0, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
     expect(r.content).not.toContain('갱신할 구독이 없습니다');
   });
 
+  /**
+   * ★★ 앞선 요청이 미정으로 끝나면 검증 대기 창(10분)이 열려 시도가 **0건**이 된다.
+   *   그것을 *"갱신할 구독이 없습니다"* 라고만 적으면 바로 아래 `잔여 0%` 와 나란히
+   *   붙어, 운영자는 **아무도 아무것도 안 하고 있다**고 읽는다.
+   */
+  it('★★ 검증 대기 중이면 "없습니다" 가 아니라 "기다리는 중" 이라고 적는다', async () => {
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 2,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 2,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '기다리는 중인데 할 게 없다고 적었다').not.toContain('갱신할 구독이 없습니다');
+    expect(r.content).toContain('검증을 기다리는 중');
+    expect(r.content).toContain('아직 누를 때가 아닙니다');
+  });
+
+  it('★ 대기도 시도도 없으면 "없습니다" 가 맞다', async () => {
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 2,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 0,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('갱신할 구독이 없습니다');
+  });
+
   it('★★ 실패하면 "눌러도 같다" 를 말한다 — 안 적으면 장애 중에 연타한다', async () => {
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 0, renewFailed: 2 }),
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 0, renewFailed: 2, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
     expect(r.content).toContain('2건이 실패');

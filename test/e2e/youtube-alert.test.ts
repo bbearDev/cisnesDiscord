@@ -1037,6 +1037,63 @@ describe('★★ 503 은 미정이다 — 검증 대기 창을 연다', () => {
     expect(h.subs.get(CH)?.leaseSeconds).toBe(4_000);
   });
 
+  /**
+   * ★★ **늦게 온 검증이 실패 episode 를 닫아야 한다.**
+   *
+   *   닫지 않으면 `expires_at` 이 미래로 밀려 `dueForRenew` 가 2.5일간 거짓이 되고,
+   *   그동안 `attempt()` 가 불리지 않으므로 스트릭이 **1 인 채로 굳는다.** 다음 갱신
+   *   주기마다 1씩 쌓여 3회째에 *"갱신 3회 연속 실패"* 경보가 뜨는데, 실제로는
+   *   **세 번 다 성공한** 것이다 (§3-a 틀리게 보내기). 게다가 `stuck-watch` 가
+   *   `alerted` 를 세워 버리므로 **진짜 장애 때는 경보가 안 뜬다** (안 보내기).
+   */
+  it('★★ 늦게 온 검증이 실패 스트릭을 푼다 — 성공 3번이 "연속 실패" 로 쌓이면 안 된다', async () => {
+    const h = harness();
+
+    // 503 → 늦은 검증 → 성사. 실측된 그 경로를 세 주기 반복한다.
+    for (let i = 0; i < 3; i++) {
+      h.net.hubAccepts = false;
+      await h.websub.sweep();
+      h.clock.advance(2 * 60_000); // 실측된 검증 지연
+      await h.verifyLate();
+      expect(h.subs.get(CH)?.expiresAt, `${String(i)}번째 주기에서 안 붙었다`).toBeDefined();
+      h.clock.advance(3_000 * 1_000); // 리스 4000초의 50% 를 지나 다시 갱신 때가 된다
+    }
+
+    expect(h.alerts, '성공한 갱신 3번이 "3회 연속 실패" 경보가 됐다').toHaveLength(0);
+  });
+
+  /**
+   * ★ **짧은 리스라야 이 단언이 공허하지 않다.** 기본 리스(4000초)에서는 갱신 시점
+   *   (50% = 2000초)이 백오프 상한(1800초)보다 늦어 백오프가 **어차피 자연 만료된다** —
+   *   `nextAttemptAtMs.delete` 를 지워도 테스트가 통과한다(실제로 확인했다).
+   *   허브가 짧은 리스를 주는 경우에만 차이가 드러나고, 이 코드베이스는 리스를
+   *   상수로 박지 않기로 했으므로(`parseLeaseSeconds` 머리말) 그 경우가 실재한다.
+   */
+  it('★ 늦게 온 검증은 백오프도 푼다 — 리스가 짧으면 다음 주기가 백오프에 막힌다', async () => {
+    const h = harness({ leaseSeconds: 60 }); // 짧은 리스라야 백오프가 갱신 시점보다 늦다
+    h.net.hubAccepts = false;
+
+    // ★ 스트릭을 2까지 올린다. 스트릭 1 이면 백오프(600초)가 쿨다운(600초)과 같아
+    //   무엇이 막았는지 갈리지 않는다 — 2 면 백오프가 1200초로 벌어져 **쿨다운이
+    //   풀린 뒤에도 남는 구간**이 생기고, 거기서만 "검증이 백오프를 풀었다" 를 말할 수 있다.
+    await h.websub.sweep(); // t=0   streak 1, 백오프 600초
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.sweep(); // t=601 streak 2, 백오프 1200초 → t=1801 까지
+
+    h.clock.advance(2 * 60_000); // t=721
+    await h.verifyLate(); // 성사 — 여기서 백오프가 풀려야 한다
+    expect(h.subs.get(CH)?.expiresAt).toBeDefined();
+
+    h.net.hubAccepts = true;
+    const before = h.net.hubRequests.length;
+    // t=1322 — 쿨다운(t=1201)은 지났고 백오프(t=1801)는 남아 있는 구간이다
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests.length, '검증으로 살아났는데 백오프가 남아 다음 갱신을 막았다').toBe(
+      before + 1,
+    );
+  });
+
   it('★★ 4xx 는 확정 실패다 — 창을 열지 않는다 (영영 안 붙는 상태를 숨기면 안 된다)', async () => {
     const h = harness();
     h.net.hubAccepts = false;
