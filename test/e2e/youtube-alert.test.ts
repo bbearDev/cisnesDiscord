@@ -91,7 +91,7 @@ interface FakeNet {
   /**
    * 거절할 때 돌려줄 상태 코드. 기본 503(=미정).
    *
-   * ★ 4xx 로 바꾸면 **확정 실패**가 된다 — 그 둘을 가르는 것이 `hubMayHaveAccepted` 다.
+   * ★ 4xx 로 바꾸면 **확정 실패**가 된다 — 그 둘을 가르는 것이 `hubDelivery` 다.
    */
   hubRejectStatus: number;
   /** 허브가 검증 GET 을 곧바로 보내는가 */
@@ -1092,6 +1092,29 @@ describe('★★ 503 은 미정이다 — 검증 대기 창을 연다', () => {
     expect(h.net.hubRequests.length, '검증으로 살아났는데 백오프가 남아 다음 갱신을 막았다').toBe(
       before + 1,
     );
+  });
+
+  /**
+   * ★★ **구독은 붙었는데 만료를 모르는 상태**는 눈이 전부 감긴다.
+   *
+   *   `expires_at` 이 NULL 이라 리스 잔여 경보가 평가되지 않고(`runSweep` 의 게이트),
+   *   `recordLease` 의 SQL 이 `last_renew_error` 를 **무조건 비우므로** 런북의 진단
+   *   질의(§7-b)에는 멀쩡한 행으로 보인다. 그래서 사유를 다시 적는다.
+   *
+   * ★ `autoVerify: false` + `verifyLate()` 라야 실제 순서다. 허브는 202 를 주고
+   *   **그 뒤에** 검증을 보내므로 `clearRenewError` 가 먼저, 이 기록이 나중이다.
+   *   하니스의 `autoVerify` 는 응답 **안에서** 검증을 보내 순서가 뒤집힌다.
+   */
+  it('★★ 리스 없는 검증은 사유를 남긴다 — recordLease 가 방금 지웠기 때문이다', async () => {
+    const h = harness({ leaseSeconds: undefined, autoVerify: false });
+    await h.websub.sweep(); // 202 → clearRenewError
+    await h.verifyLate(); // 검증 도착, 그런데 lease_seconds 가 없다
+
+    expect(h.subs.get(CH)?.expiresAt, '리스가 없는데 만료가 찍혔다').toBeUndefined();
+    expect(
+      h.subs.get(CH)?.lastRenewError,
+      '붙었지만 만료를 모르는 상태가 DB 에 아무 흔적도 안 남았다',
+    ).toContain('lease_seconds');
   });
 
   it('★★ 4xx 는 확정 실패다 — 창을 열지 않는다 (영영 안 붙는 상태를 숨기면 안 된다)', async () => {

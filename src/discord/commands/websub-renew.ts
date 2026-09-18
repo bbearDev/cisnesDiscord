@@ -170,21 +170,44 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
          */
         /**
          * ★★ **"할 게 없었다" 와 "기다리는 중이라 안 했다" 를 가른다.**
-         *   앞선 요청이 미정으로 끝나면 검증 대기 창(10분)이 열리고, 그 안에서 누르면
-         *   시도가 **0건**이 된다. 그것을 *"갱신할 구독이 없습니다"* 라고만 적으면
+         *   앞선 요청 뒤에는 재요청 창(10분)이 열리고, 그 안에서 누르면 시도가
+         *   **0건**이 된다. 그것을 *"갱신할 구독이 없습니다"* 라고만 적으면
          *   바로 아래 `잔여 0%` 와 나란히 붙어, 운영자는 **아무도 아무것도 안 하고
-         *   있다**고 읽는다 — 실제로는 허브의 답을 기다리는 중이다.
+         *   있다**고 읽는다.
+         *
+         * ★★ 다만 **"검증을 기다리는 중" 이라고 쓰면 안 된다.** 그 창은 `5xx` 뿐
+         *   아니라 **무응답(timeout)에서도** 열리는데(`hubDelivery` 의 표 가운뎃줄),
+         *   무응답은 요청이 닿았는지조차 모르는 상태다. 거기에 대고 검증이 올 것처럼
+         *   적으면, 같은 상태를 두고 1분 전에는 *"실패했습니다"* 라 하고 지금은
+         *   *"기다리는 중"* 이라 하게 된다 — 61초 사이에 서로 어긋나는 두 문장이다.
+         *   창이 열렸다는 **사실만** 적고 무엇이 올지는 약속하지 않는다.
          */
         const head =
           attempted === 0 && out.skippedCooldown > 0
-            ? `앞선 요청의 검증을 기다리는 중입니다 — ${String(out.skippedCooldown)}건 (아직 누를 때가 아닙니다)`
+            ? `앞선 요청 뒤 **재요청 창(10분) 안**입니다 — ${String(out.skippedCooldown)}건 / 확인 ${String(out.checked)}건`
             : attempted === 0
               ? `지금은 갱신할 구독이 없습니다 — 확인 ${String(out.checked)}건 (잔여가 50% 를 넘습니다)`
               : out.renewFailed === 0 && out.renewPending === 0
-              ? `구독 갱신을 시도했습니다 — 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건`
-              : out.renewFailed === 0
-                ? `구독 갱신을 요청했고 **${String(out.renewPending)}건은 결과를 기다리는 중**입니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`
-                : `구독 갱신을 시도했지만 **${String(out.renewFailed)}건이 실패**했습니다 (미정 ${String(out.renewPending)}건 / 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`;
+                ? `구독 갱신을 시도했습니다 — 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건`
+                : out.renewFailed === 0
+                  ? `구독 갱신을 요청했고 **${String(out.renewPending)}건은 결과를 기다리는 중**입니다 (성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`
+                  : `구독 갱신을 시도했지만 **${String(out.renewFailed)}건이 실패**했습니다 (미정 ${String(out.renewPending)}건 / 성공 ${String(out.renewed)}건 / 확인 ${String(out.checked)}건)`;
+
+        /**
+         * ★ `attempted > 0` 이어도 붙인다. 채널이 여럿이면 한쪽은 시도되고 한쪽은
+         *   창에 걸릴 수 있는데, head 만 보면 걸린 쪽이 **문장에서 통째로 사라진다.**
+         *
+         * ★ **나갈 때(10분)를 반드시 적는다.** "아직 누를 때가 아니다" 만 적고 언제까지인지
+         *   안 적으면 운영자는 60초 쿨다운마다 열 번을 누른다.
+         */
+        const skippedTail =
+          out.skippedCooldown === 0
+            ? []
+            : [
+                '',
+                `앞선 요청이 허브에 닿았을 수 있어 **10분간 재요청을 막습니다** (${String(out.skippedCooldown)}건).`,
+                '그 사이 검증이 도착하면 저절로 완료됩니다 — 10분쯤 뒤에 다시 눌러 확인해 주십시오.',
+              ];
 
         const pendingTail =
           out.renewPending === 0
@@ -207,7 +230,7 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
                 '허브가 회복되면 사람이 누르지 않아도 붙습니다.',
               ];
 
-        const tail = [...pendingTail, ...failTail];
+        const tail = [...skippedTail, ...pendingTail, ...failTail];
 
         return {
           ephemeral: true,

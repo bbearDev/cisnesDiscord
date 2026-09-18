@@ -46,7 +46,7 @@ export interface WebSubSubRepo {
    *
    * ★ 202 만 뜻하지 않는다. 허브가 `5xx` 를 돌려주거나 아예 응답하지 않아도 **받아서
    *   처리했을 수 있고**, 실제로 503 을 받은 요청이 2분 뒤 검증된 관측이 있다
-   *   (2026-09-19 · `websub-client.ts` 의 `hubMayHaveAccepted`). 그래서 그 경우에도
+   *   (2026-09-19 · `websub-client.ts` 의 `hubDelivery`). 그래서 그 경우에도
    *   여기를 찍는다 — `subscribed_at` 은 *"확정됐다"* 가 아니라 *"기다릴 이유가
    *   생겼다"* 는 표시이고, `RESUBSCRIBE_COOLDOWN_MS` 가 그것을 읽어 중복 요청을 막는다.
    */

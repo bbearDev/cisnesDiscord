@@ -324,11 +324,14 @@ export interface SweepOutcome {
   checked: number;
   renewed: number;
   /**
-   * 허브가 받았을 수도 있어 **결과를 모르는** 시도 (`hubMayHaveAccepted`).
+   * `may-be-accepted`(5xx)로 판정된 시도만 (`hubDelivery`).
    *
    * ★ `renewFailed` 와 갈라 세는 이유는 운영자에게 하는 말이 다르기 때문이다.
    *   "실패" 는 *"다시 눌러도 같다"* 이고 "미정" 은 *"곧 붙을 수 있으니 기다려라"* 다.
    *   한 칸으로 합치면 `/구독갱신` 이 성사 직전인 구독을 실패로 보고한다.
+   *
+   * ⚠️ **무응답(`no-answer`)은 여기 안 들어온다** — 그쪽도 결과를 모르는 것은 같지만
+   *   *"곧 붙는다"* 는 근거가 없어 `renewFailed` 로 센다 (`hubDelivery` 의 표 가운뎃줄).
    */
   renewPending: number;
   renewFailed: number;
@@ -756,11 +759,25 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
       subs.recordLease(input.channelId, leaseSeconds, expiresAt);
 
       if (leaseSeconds === undefined) {
-        // 리스를 모르는 구독은 만료를 계산할 수 없다. 스윕이 쿨다운 뒤 재구독한다.
-        //
-        // ★★ 여기서는 실패 스트릭을 **풀지 않는다.** 구독은 붙었지만 만료를 모르는
-        //   상태이고, 리스 잔여 경보는 `expires_at` 이 NULL 이면 아예 평가되지 않는다
-        //   (`runSweep` 의 게이트). 여기서까지 풀면 이 상태를 볼 눈이 하나도 안 남는다.
+        /**
+         * 리스를 모르는 구독은 만료를 계산할 수 없다. 스윕이 쿨다운 뒤 재구독한다.
+         *
+         * ★★ **이 상태는 세 눈이 모두 감긴다.** `expires_at` 이 NULL 이라 리스 잔여
+         *   경보가 평가되지 않고(`runSweep` 의 게이트), 바로 위 `recordLease` 의 SQL 이
+         *   `last_renew_error` 를 **무조건 비우므로** 런북의 진단 질의에는 멀쩡한 행으로
+         *   보인다. 그래서 사유를 **다시 적는다** — 안 적으면 구독이 붙었는데 만료를
+         *   모르는 상태가 로그 한 줄 말고는 아무 데도 안 남는다 (§3-a 안 보내기).
+         *
+         * ★★ 실패 스트릭도 **풀지 않는다.** 이유는 "볼 눈이 없어서" 가 아니라
+         *   (위 `setRenewError` 가 그 눈을 만든다) **핑퐁을 막기 위해서**다:
+         *   허브가 5xx 를 주다 리스 없는 검증만 보내는 상태가 이어지면, 여기서 풀 때마다
+         *   스트릭이 1→0→1→0 으로 오가며 **임계 3에 영영 닿지 않는다.**
+         */
+        subs.setRenewError(
+          input.channelId,
+          '검증은 됐으나 lease_seconds 가 없어 만료를 모릅니다',
+          clock.date().toISOString(),
+        );
         log('websub 검증에 lease_seconds 가 없습니다 — 만료를 알 수 없습니다', {
           channelId: input.channelId,
           raw: input.leaseSecondsRaw ?? null,

@@ -219,11 +219,11 @@ describe('응답 문구', () => {
   });
 
   /**
-   * ★★ 앞선 요청이 미정으로 끝나면 검증 대기 창(10분)이 열려 시도가 **0건**이 된다.
-   *   그것을 *"갱신할 구독이 없습니다"* 라고만 적으면 바로 아래 `잔여 0%` 와 나란히
-   *   붙어, 운영자는 **아무도 아무것도 안 하고 있다**고 읽는다.
+   * ★★ 앞선 요청 뒤에는 재요청 창(10분)이 열려 시도가 **0건**이 된다. 그것을
+   *   *"갱신할 구독이 없습니다"* 라고만 적으면 바로 아래 `잔여 0%` 와 나란히 붙어,
+   *   운영자는 **아무도 아무것도 안 하고 있다**고 읽는다.
    */
-  it('★★ 검증 대기 중이면 "없습니다" 가 아니라 "기다리는 중" 이라고 적는다', async () => {
+  it('★★ 재요청 창 안이면 "없습니다" 가 아니라 창이 열렸다고 적는다', async () => {
     const { cmd } = make({
       renewNow: () =>
         Promise.resolve({
@@ -235,9 +235,53 @@ describe('응답 문구', () => {
         }),
     });
     const r = await cmd.execute(OPERATOR);
-    expect(r.content, '기다리는 중인데 할 게 없다고 적었다').not.toContain('갱신할 구독이 없습니다');
-    expect(r.content).toContain('검증을 기다리는 중');
-    expect(r.content).toContain('아직 누를 때가 아닙니다');
+    expect(r.content, '창에 걸린 건데 할 게 없다고 적었다').not.toContain('갱신할 구독이 없습니다');
+    expect(r.content).toContain('재요청 창');
+    expect(r.content, '확인 건수를 빠뜨렸다 — 멀쩡한 채널까지 막힌 것처럼 읽힌다').toContain(
+      '확인 2건',
+    );
+    expect(r.content, '언제까지인지 안 적으면 60초마다 누른다').toContain('10분');
+  });
+
+  /**
+   * ★★ 이 창은 `5xx` 뿐 아니라 **무응답(timeout)에서도** 열린다. 무응답은 요청이
+   *   닿았는지조차 모르는 상태라, 검증이 올 것처럼 적으면 1분 전의 *"실패했습니다"* 와
+   *   서로 어긋나는 두 문장이 된다 (§3-a 틀리게 보내기).
+   */
+  it('★★ 창 안내가 "검증을 기다린다" 고 단정하지 않는다 — 무응답에서도 열리는 창이다', async () => {
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 1,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 1,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '무응답일 수도 있는데 검증을 기다린다고 단정했다').not.toContain(
+      '검증을 기다리는 중',
+    );
+    // "닿았을 수 있어" 처럼 조건부로 적는 것은 괜찮다 — 단정만 아니면 된다.
+    expect(r.content).toContain('닿았을 수 있어');
+  });
+
+  it('★ 시도가 있어도 창에 걸린 채널이 있으면 그 사실이 사라지지 않는다', async () => {
+    // 채널이 여럿이면 한쪽은 시도되고 한쪽은 창에 걸린다. head 만 보면 걸린 쪽이
+    // 문장에서 통째로 빠진다 — tail 이 그것을 붙든다.
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 3,
+          renewed: 0,
+          renewPending: 1,
+          renewFailed: 0,
+          skippedCooldown: 1,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '창에 걸린 채널이 문장에서 사라졌다').toContain('재요청을 막습니다');
   });
 
   it('★ 대기도 시도도 없으면 "없습니다" 가 맞다', async () => {

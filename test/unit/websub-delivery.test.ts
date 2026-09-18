@@ -93,6 +93,41 @@ describe('★★ 5xx — 허브가 받았을 수 있다', () => {
     h.close();
   });
 
+  /**
+   * ★★ **생산자와 소비자 사이의 배선을 잡는다.**
+   *
+   *   `skippedCooldown` 을 올리는 쪽(`runSweep`)과 읽는 쪽(`/구독갱신` 문구)은 각각
+   *   테스트가 있었지만 **그 사이가 없었다** — 증가 줄을 지워도 저장소 전체가 통과했다.
+   *   그러면 카운터가 영영 0 이고, 새 문구 분기는 죽은 코드가 되며, 운영자는 다시
+   *   *"갱신할 구독이 없습니다"* 를 `잔여 0%` 옆에서 읽게 된다.
+   */
+  it('★★ 검증 대기 창에 걸린 채널을 skippedCooldown 으로 센다 (시도는 0건)', async () => {
+    const http = failWith('http', 503);
+    const h = build(http);
+
+    await h.websub.sweep(); // 미정 → markRequested → 창 10분
+    expect(http.calls).toBe(1);
+
+    h.clock.advance(60_000); // 창 안
+    const out = await h.websub.sweep();
+
+    expect(out.skippedCooldown, '창에 걸린 채널을 안 셌다').toBe(1);
+    expect(out.renewPending, '시도하지도 않고 미정으로 셌다').toBe(0);
+    expect(out.renewFailed).toBe(0);
+    expect(http.calls, '창 안인데 허브를 또 두드렸다').toBe(1);
+    h.close();
+  });
+
+  it('★ 창이 풀리면 skippedCooldown 이 다시 0 이다 — 굳으면 안 된다', async () => {
+    const h = build(failWith('http', 503));
+    await h.websub.sweep();
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    const out = await h.websub.sweep();
+    expect(out.skippedCooldown).toBe(0);
+    expect(out.renewPending).toBe(1);
+    h.close();
+  });
+
   it('★★ 재시도 상한이 30분이다 — 1시간이면 성사 가능한 시도를 버린다', async () => {
     const h = build(failWith('http', 503));
     // 상한에 닿을 만큼 스트릭을 올린다
@@ -145,8 +180,9 @@ describe('★★ timeout — 닿았는지 모른다', () => {
     // 31분 — 미정 상한이면 쳤겠지만 확정 실패 상한(1시간)이라 아직이다
     h.clock.advance(31 * 60_000);
     const out = await h.websub.sweep();
-    expect(out.renewFailed, '무응답에 30분 상한을 물렸다').toBe(0);
-    expect(out.skippedCooldown + out.renewPending).toBe(0);
+    // ★ 실패 메시지를 **탐지하는 단언에** 붙인다. `renewFailed === 0` 쪽은 30분 상한을
+    //   물려도 참이라(시도가 일어나고 'failed' 가 아니라 'pending' 이 된다) 장식이다.
+    expect(out.renewPending + out.renewFailed, '무응답에 30분 상한을 물려 다시 쳤다').toBe(0);
     h.close();
   });
 });
