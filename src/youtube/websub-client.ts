@@ -282,6 +282,19 @@ export interface WebSubClient {
   secretFor(channelId: string): string | undefined;
   /** 갱신·경보 판정 1회. 테스트와 주기 스윕이 같은 함수를 탄다 */
   sweep(): Promise<SweepOutcome>;
+  /**
+   * **운영자 수동 갱신** — 실패 백오프를 지우고 즉시 스윕한다.
+   *
+   * ★★ 자동 갱신은 이미 돌고 있다. 이 함수가 버는 것은 **백오프 상한(1시간)만큼의
+   *   시간**뿐이다 — 허브가 막 회복됐을 때 다음 시도를 기다리지 않고 지금 친다.
+   *   "자동이 안 되니 수동이 필요하다" 가 아니라 "자동이 최대 1시간 늦다" 이다.
+   *
+   * ★★ **`RESUBSCRIBE_COOLDOWN_MS` 는 지우지 않는다.** 그 쿨다운은 202 를 받은 뒤
+   *   검증을 기다리는 10분을 보호한다 — 그것까지 무시하면 허브가 검증하는 동안
+   *   운영자가 누를 때마다 재구독 폭탄이 나간다. 지우는 것은 **우리가 스스로 건
+   *   브레이크**뿐이다.
+   */
+  renewNow(): Promise<SweepOutcome>;
   /** 지표 스냅샷 */
   leaseRatios(): { channelId: string; ratio: number }[];
   stop(): void;
@@ -397,7 +410,7 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
     return false;
   }
 
-  async function sweep(): Promise<SweepOutcome> {
+  async function runSweep(): Promise<SweepOutcome> {
     const now = clock.now();
     const out: SweepOutcome = { checked: 0, renewed: 0, renewFailed: 0, warnings: [], alerts: [] };
 
@@ -450,6 +463,34 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
     return out;
   }
 
+  /**
+   * 진행 중인 스윕. **겹침을 막는 유일한 자리다.**
+   *
+   * ★★ 예전에는 호출자가 주기 타이머 하나뿐이었고 스윕 최대 길이(채널 5 × 45초 = 225초)가
+   *   주기(300초)보다 짧아 겹칠 일이 없었다. `renewNow` 가 **아무 때나 부르는 두 번째
+   *   호출자**를 만들면서 그 전제가 깨졌다 — 수동 스윕이 도는 20초 사이에 주기 스윕이
+   *   뜨면, 백오프를 방금 지웠으므로 같은 채널에 `subscribe` 가 **두 번** 나간다.
+   *   허브 장애 중이면 둘 다 503 이라 실패 스트릭도 두 번 오른다.
+   *
+   * ★★ **공개 `sweep()` 이 이 가드를 탄다.** 가드를 특정 호출자(주기 타이머)에만 걸면
+   *   "겹치지 않는다" 가 클라이언트의 성질이 아니라 **호출 규율**이 된다 — 규율은
+   *   새 호출자가 생기는 날 조용히 깨진다. 이 PR 이 `renewNow` 로 두 번째 호출자를
+   *   만들면서 겪은 것이 정확히 그것이다.
+   *
+   * ★ 순차로 `await` 하는 호출은 영향받지 않는다. 앞이 끝나면 `inFlight` 가 비므로
+   *   다음 호출은 새로 돈다 — 접히는 것은 **정말로 동시인** 호출뿐이다.
+   */
+  let inFlight: Promise<SweepOutcome> | undefined;
+
+  function sweepOnce(): Promise<SweepOutcome> {
+    if (inFlight === undefined) {
+      inFlight = runSweep().finally(() => {
+        inFlight = undefined;
+      });
+    }
+    return inFlight;
+  }
+
   return {
     async start(): Promise<SweepOutcome> {
       for (const channelId of known.keys()) ensureRow(channelId);
@@ -473,18 +514,37 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
         },
       );
 
-      const first = await sweep();
+      const first = await sweepOnce();
 
       timer?.dispose();
       timer = clock.setInterval(() => {
-        void sweep();
+        void sweepOnce();
       }, sweepMs);
 
       return first;
     },
 
     subscribe,
-    sweep,
+    // ★ 공개 `sweep` = 가드를 탄 것. 내부 `runSweep` 은 가드 밖으로 새지 않는다.
+    sweep: sweepOnce,
+
+    async renewNow(): Promise<SweepOutcome> {
+      /**
+       * ★★ **도는 스윕이 있으면 끝을 기다린 뒤 지운다.** 먼저 지우면 그 스윕이 같은
+       *   채널을 한 번 더 두드린다 — 이 명령이 막으려던 바로 그 과다 호출이다.
+       *
+       * ★ 진행 중 스윕에 **그냥 올라타지 않는다.** 그 스윕은 백오프를 **보고** 건너뛴
+       *   뒤라, 올라타면 지운 효과가 다음 주기(최대 5분)로 밀린다. 수동 갱신이 버는 것이
+       *   그 시간인데 그걸 도로 까먹는 셈이다. 기다렸다가 **새로** 돈다.
+       *
+       * ★ `catch` 로 삼키는 이유: 앞 스윕의 실패는 그 호출자의 결과이지 이 호출의
+       *   결과가 아니다. 여기서 던지면 남의 실패로 수동 갱신이 취소된다.
+       */
+      if (inFlight !== undefined) await inFlight.catch(() => undefined);
+      // ★ 우리 백오프만 지운다. 상류 보호(쿨다운)는 sweep 안에서 그대로 걸린다.
+      nextAttemptAtMs.clear();
+      return sweepOnce();
+    },
 
     verify(input): VerificationResult {
       if (!known.has(input.channelId)) {

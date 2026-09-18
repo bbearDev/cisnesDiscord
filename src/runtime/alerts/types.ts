@@ -60,6 +60,25 @@ export type AlertKind = (typeof ALERT_KINDS)[number];
  */
 export const DEBOUNCE_EXEMPT: readonly AlertKind[] = [];
 
+/**
+ * 종류별 디바운스 간격(분) 재정의. 없는 종류는 `alerts.minIntervalMin`(기본 30)을 쓴다.
+ *
+ * ★★ 왜 필요한가 — **경보의 유효기간이 종류마다 다르다.**
+ *   기본 30분은 *"조치하면 곧 멎는 상태"* 를 전제한다. 그런데 `websub_lease` 는
+ *   리스 잔여가 임계 아래로 내려간 **마지막 하루 내내** 참이다(리스 5일 × 20%).
+ *   30분이면 하루에 **48번** 오는데, 첫 한 번 이후로는 새로 알려 주는 것이 없다.
+ *
+ * ★ 실측(2026-09-18): 허브 장애로 갱신이 막힌 동안 이 경보가 30분마다 울렸고,
+ *   매번 *"억제된 동일 경보 5~6건"* 이 붙었다. 운영자가 할 수 있는 일은 없었고
+ *   (허브가 503), 그 사이 다른 경보가 이 소음에 묻힐 위험만 커졌다.
+ *
+ * ★ 6시간을 고른 이유: 임계(20%) 아래 구간이 대략 하루이므로 **네 번** 알린다.
+ *   한 번만 알리고 마는 것(무한대)과 다르다 — 놓친 사람이 다시 볼 기회를 남긴다.
+ */
+export const DEBOUNCE_INTERVAL_OVERRIDE_MIN: Partial<Record<AlertKind, number>> = {
+  websub_lease: 360,
+};
+
 export function isAlertKind(v: string): v is AlertKind {
   return (ALERT_KINDS as readonly string[]).includes(v);
 }

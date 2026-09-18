@@ -1,7 +1,12 @@
 // 출처: chzzkbot src/runtime/alerts/alert-service.ts
 //       — 디바운스 키를 (channelId, kind) 에서 **(scope, kind)** 로 일반화했다 (계획 §14).
 import type { Clock } from '../clock.js';
-import { DEBOUNCE_EXEMPT, SYSTEM_SCOPE, type AlertKind } from './types.js';
+import {
+  DEBOUNCE_EXEMPT,
+  DEBOUNCE_INTERVAL_OVERRIDE_MIN,
+  SYSTEM_SCOPE,
+  type AlertKind,
+} from './types.js';
 import type { Notifier, WebhookSendResult } from './discord-webhook.js';
 
 /**
@@ -9,6 +14,7 @@ import type { Notifier, WebhookSendResult } from './discord-webhook.js';
  *
  * 세 가지를 한다:
  *   ① 같은 경보를 `minIntervalMin` 안에 반복 발송하지 않는다
+ *      (종류별 재정의는 `DEBOUNCE_INTERVAL_OVERRIDE_MIN` — 유효기간이 긴 경보용)
  *   ② 면제 종류는 디바운스를 건너뛴다 (`DEBOUNCE_EXEMPT`)
  *   ③ 발송이 실패해도 **호출자에게 던지지 않는다** (계획 Principle 2)
  *
@@ -174,7 +180,18 @@ function headline(scope: string): string {
 export function createOpsAlertService(opts: OpsAlertServiceOptions): OpsAlertService {
   const { notifier, state, clock } = opts;
   const enabled = opts.enabled ?? true;
-  const windowMs = Math.max(0, opts.minIntervalMin) * 60_000;
+  const baseWindowMs = Math.max(0, opts.minIntervalMin) * 60_000;
+  /**
+   * 종류별 창. 재정의가 있으면 그것을 쓴다 (`DEBOUNCE_INTERVAL_OVERRIDE_MIN`).
+   *
+   * ★ `minIntervalMin: 0`(디바운스 끔)은 **재정의보다 세다.** 운영자가 전부 받겠다고
+   *   껐는데 특정 종류만 몰래 6시간 눌러 두면, 껐다는 사실이 거짓이 된다.
+   */
+  const windowFor = (kind: AlertKind): number => {
+    if (baseWindowMs === 0) return 0;
+    const override = DEBOUNCE_INTERVAL_OVERRIDE_MIN[kind];
+    return override === undefined ? baseWindowMs : Math.max(0, override) * 60_000;
+  };
 
   const emit = (e: AlertEvent): void => {
     try {
@@ -196,6 +213,7 @@ export function createOpsAlertService(opts: OpsAlertServiceOptions): OpsAlertSer
     const exempt = DEBOUNCE_EXEMPT.includes(kind);
     const now = clock.now();
 
+    const windowMs = windowFor(kind);
     if (!exempt && windowMs > 0) {
       const last = state.lastSentAt(scope, kind);
       if (last !== undefined && now - last < windowMs) {

@@ -81,6 +81,10 @@ interface FakeNet {
   hubRequests: { mode: string; topic: string; callback: string; secret: string }[];
   /** 피드를 실제로 가져간 횟수. 폴 간격(백오프) 판정에 쓴다 */
   feedHits: number;
+  /** 허브 요청을 붙잡아 둘 훅. 겹침 테스트가 쓴다 */
+  beforeHub?: (() => Promise<void>) | undefined;
+  /** 동시에 떠 있던 허브 요청의 최대치. 겹침은 **요청 수가 아니라 이 값**으로 드러난다 */
+  maxConcurrentHub: number;
   /** 허브가 구독 요청을 받아 주는가 */
   hubAccepts: boolean;
   /** 허브가 검증 GET 을 곧바로 보내는가 */
@@ -132,6 +136,7 @@ function build(opts: BuildOptions = {}): Harness {
     feedStatus: new Map(),
     hubRequests: [],
     feedHits: 0,
+    maxConcurrentHub: 0,
     hubAccepts: true,
     autoVerify: opts.autoVerify ?? true,
     leaseSeconds: 'leaseSeconds' in opts ? opts.leaseSeconds : 4_000,
@@ -168,20 +173,14 @@ function build(opts: BuildOptions = {}): Harness {
         callback: form.get('hub.callback') ?? '',
         secret: form.get('hub.secret') ?? '',
       });
-      if (!net.hubAccepts) {
-        return new Response('허브가 거절했습니다', {
-          status: 503,
-          headers: { 'content-type': 'text/plain' },
-        });
+      inFlightHub += 1;
+      net.maxConcurrentHub = Math.max(net.maxConcurrentHub, inFlightHub);
+      try {
+        if (net.beforeHub !== undefined) await net.beforeHub();
+        return await respondHub(form);
+      } finally {
+        inFlightHub -= 1;
       }
-      if (net.autoVerify) {
-        await deliverVerification(
-          form.get('hub.callback') ?? '',
-          form.get('hub.mode') ?? '',
-          form.get('hub.topic') ?? '',
-        );
-      }
-      return new Response(null, { status: 202 });
     }
 
     const channelId = url.searchParams.get('channel_id') ?? '';
@@ -193,6 +192,24 @@ function build(opts: BuildOptions = {}): Harness {
       headers: { 'content-type': 'application/atom+xml; charset=utf-8' },
     });
   };
+
+  let inFlightHub = 0;
+  async function respondHub(form: URLSearchParams): Promise<Response> {
+    if (!net.hubAccepts) {
+      return new Response('허브가 거절했습니다', {
+        status: 503,
+        headers: { 'content-type': 'text/plain' },
+      });
+    }
+    if (net.autoVerify) {
+      await deliverVerification(
+        form.get('hub.callback') ?? '',
+        form.get('hub.mode') ?? '',
+        form.get('hub.topic') ?? '',
+      );
+    }
+    return new Response(null, { status: 202 });
+  }
 
   const budget = createHttpBudget({
     // ★★ 이 한 줄이 composition-root 배선 요구다 (`http-text.ts` 머리말).
@@ -1078,6 +1095,72 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     expect(h.poller.failStreaks()[0]?.streak, '성공 후에도 간격이 늘어난 채였다').toBe(1);
 
     h.poller.stop();
+  });
+
+  it('★★ renewNow 는 백오프를 지우고 즉시 친다 — 수동 갱신이 버는 것이 이것뿐이다', async () => {
+    // 자동 갱신은 이미 돈다. 이 함수가 버는 것은 백오프 상한(1시간)만큼의 시간뿐이다.
+    const h = harness();
+    h.net.hubAccepts = false;
+    h.net.autoVerify = false;
+
+    await h.websub.sweep();
+    expect(h.net.hubRequests).toHaveLength(1);
+
+    // 백오프 중이라 sweep 은 아무것도 안 한다.
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '백오프가 안 걸렸다').toHaveLength(1);
+
+    // renewNow 는 그 백오프를 지우고 지금 친다.
+    await h.websub.renewNow();
+    expect(h.net.hubRequests, 'renewNow 가 백오프를 뚫지 못했다').toHaveLength(2);
+  });
+
+  it('★★ 스윕이 도는 중에 renewNow 를 불러도 채널당 한 번만 나간다', async () => {
+    /**
+     * ★★ 이 가드가 없으면 `renewNow` 가 백오프를 지운 직후 **도는 스윕**이 같은 채널을
+     *   한 번 더 두드린다. 허브 장애 중(503 까지 20초)이면 스윕이 길어 겹칠 확률이
+     *   실제로 높고, 둘 다 실패하면 스트릭이 두 번 올라 백오프가 한 단계 더 뛴다.
+     *   이 PR 이 막으려던 과다 호출을 스스로 만드는 모양이다.
+     */
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness();
+    h.net.hubAccepts = false;
+    h.net.autoVerify = false;
+    // 첫 구독 요청이 gate 에서 멈춰 있는 동안 renewNow 를 부른다.
+    h.net.beforeHub = () => gate;
+
+    const running = h.websub.sweep();
+    const manual = h.websub.renewNow();
+
+    release?.();
+    await running;
+    await manual;
+
+    // ★★ 요청 **수**로는 안 드러난다 — 겹치든 순차든 둘 다 2건이다.
+    //   드러나는 것은 **동시에 떠 있었는가** 다.
+    expect(h.net.maxConcurrentHub, '스윕과 수동 갱신의 구독 요청이 동시에 떠 있었다').toBe(1);
+    expect(h.net.hubRequests.length).toBe(2);
+  });
+
+  it('★★ renewNow 도 재구독 쿨다운은 지키지 않는다 — 검증 대기 중에 폭탄을 쏘지 않게', async () => {
+    // 202 를 받은 뒤 10분은 허브가 검증하는 창이다. 우리 백오프와 달리 이 쿨다운은
+    // 상류를 보호하는 것이라, 수동 갱신도 뚫지 않는다.
+    const h = harness();
+    h.net.autoVerify = false; // 202 는 받되 검증은 오지 않는다
+    await h.websub.sweep();
+    const afterFirst = h.net.hubRequests.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    await h.websub.renewNow();
+    expect(h.net.hubRequests, 'renewNow 가 재구독 쿨다운까지 뚫었다').toHaveLength(afterFirst);
+
+    // 쿨다운이 지나면 그때는 나간다.
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.renewNow();
+    expect(h.net.hubRequests.length).toBeGreaterThan(afterFirst);
   });
 
   it('★★ 구독이 실패하면 재시도 간격이 벌어진다 — 재시도가 막힘을 유지시키지 않게', async () => {
