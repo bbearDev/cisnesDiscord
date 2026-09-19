@@ -24,9 +24,15 @@ const MEMBER: CommandContext = { guildId: 'g1', userId: 'u2', isOperator: false 
 function port(over: Partial<WebSubRenewPort> = {}): WebSubRenewPort & { calls: number } {
   const p = {
     calls: 0,
-    renewNow: (): Promise<{ checked: number; renewed: number; renewFailed: number }> => {
+    renewNow: (): Promise<{
+      checked: number;
+      renewed: number;
+      renewPending: number;
+      renewFailed: number;
+      skippedCooldown: number;
+    }> => {
       p.calls += 1;
-      return Promise.resolve({ checked: 2, renewed: 2, renewFailed: 0 });
+      return Promise.resolve({ checked: 2, renewed: 2, renewPending: 0, renewFailed: 0, skippedCooldown: 0 });
     },
     leaseRatios: (): { channelId: string; ratio: number }[] => [
       { channelId: 'UC_A', ratio: 0.93 },
@@ -102,7 +108,7 @@ describe('★★ 연타로 허브를 두드리지 않는다', () => {
     const { cmd } = make({
       renewNow: async () => {
         await gate;
-        return { checked: 1, renewed: 1, renewFailed: 0 };
+        return { checked: 1, renewed: 1, renewPending: 0, renewFailed: 0, skippedCooldown: 0 };
       },
     });
 
@@ -130,7 +136,7 @@ describe('★★ 예외가 나도 던지지 않고, 잠기지도 않는다', () 
       renewNow: () => {
         calls += 1;
         if (shouldThrow) return Promise.reject(new Error('boom'));
-        return Promise.resolve({ checked: 1, renewed: 1, renewFailed: 0 });
+        return Promise.resolve({ checked: 1, renewed: 1, renewPending: 0, renewFailed: 0, skippedCooldown: 0 });
       },
     });
 
@@ -156,16 +162,188 @@ describe('응답 문구', () => {
     // 잔여 50% 초과이거나 재구독 쿨다운 안이면 스윕은 시도 자체를 안 하고 checked 만 올린다.
     // 아무 문제 없는 상태인데 "성공 0건" 이라 적으면 운영자가 실패로 읽고 다시 누른다.
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewFailed: 0 }),
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 0, renewFailed: 0, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
     expect(r.content).toContain('갱신할 구독이 없습니다');
     expect(r.content, '멀쩡한 상태에 허브 장애 안내를 붙였다').not.toContain('허브');
   });
 
+  /**
+   * ★★ 미정(허브가 5xx 를 줬지만 받았을 수 있음)을 "실패" 라고 적으면 운영자는
+   *   **붙는 중인 구독을** 실패로 읽고 연타한다. 2026-09-09 에 우리 IP 가 구글에
+   *   조여진 경로가 정확히 그 연타다.
+   */
+  it('★★ 미정은 "실패" 가 아니라 "기다리는 중" 이라고 적는다', async () => {
+    const { cmd } = make({
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 2, renewFailed: 0, skippedCooldown: 0 }),
+    });
+    const r = await cmd.execute(OPERATOR);
+
+    // ★ "실패" 라는 낱말 자체는 금지어가 아니다 — 본문이 *"실패가 아닙니다"* 라고
+    //   못 박는 것이 이 문구의 요점이다. 막아야 하는 것은 **실패 건수로 세는 것**이다.
+    expect(r.content, '미정을 실패 건수로 적었다 — 운영자가 연타한다').not.toContain(
+      '건이 실패',
+    );
+    expect(r.content).toContain('실패가 아닙니다');
+    expect(r.content).toContain('결과를 기다리는 중');
+    expect(r.content, '기다리면 된다는 사실을 안 알렸다').toContain('저절로 완료');
+    expect(r.content, '다시 누르지 말라고 안 했다').toContain('다시 누르지 마시고');
+  });
+
+  it('★ 미정 0건이면 대기 안내를 붙이지 않는다 — 멀쩡한 결과에 군더더기가 붙는다', async () => {
+    const { cmd } = make();
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).not.toContain('결과를 기다리는 중');
+    expect(r.content).not.toContain('저절로 완료');
+  });
+
+  it('★ 미정과 실패가 섞이면 둘 다 센다 — 한쪽을 삼키면 진단이 어긋난다', async () => {
+    const { cmd } = make({
+      renewNow: () => Promise.resolve({ checked: 3, renewed: 0, renewPending: 1, renewFailed: 2, skippedCooldown: 0 }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('2건이 실패');
+    expect(r.content).toContain('미정 1건');
+    // 실패가 있으므로 허브 안내도 함께 나온다
+    expect(r.content).toContain('허브');
+  });
+
+  it('★★ 미정만 있을 때 "갱신할 구독이 없습니다" 로 새지 않는다 — 시도는 있었다', async () => {
+    // attempted 계산에서 renewPending 을 빠뜨리면 이 경로가 "없습니다" 로 샌다.
+    const { cmd } = make({
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 2, renewFailed: 0, skippedCooldown: 0 }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).not.toContain('갱신할 구독이 없습니다');
+  });
+
+  /**
+   * ★★ 앞선 요청 뒤에는 재요청 창(10분)이 열려 시도가 **0건**이 된다. 그것을
+   *   *"갱신할 구독이 없습니다"* 라고만 적으면 바로 아래 `잔여 0%` 와 나란히 붙어,
+   *   운영자는 **아무도 아무것도 안 하고 있다**고 읽는다.
+   */
+  it('★★ 재요청 창 안이면 "없습니다" 가 아니라 창이 열렸다고 적는다', async () => {
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 2,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 2,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '창에 걸린 건데 할 게 없다고 적었다').not.toContain('갱신할 구독이 없습니다');
+    expect(r.content).toContain('재요청 창');
+    expect(r.content, '확인 건수를 빠뜨렸다 — 멀쩡한 채널까지 막힌 것처럼 읽힌다').toContain(
+      '확인 2건',
+    );
+    expect(r.content, '언제까지인지 안 적으면 60초마다 누른다').toContain('최대 10분');
+  });
+
+  /**
+   * ★★ 창을 연 것이 **주기 스윕**이면 남은 시간은 10분보다 짧다. 고정 문구로
+   *   "10분쯤 뒤에" 라고 적으면 3분 뒤 열릴 창을 10분 기다리게 한다.
+   */
+  it('★★ 남은 시간을 실제 값으로 적는다 — 10분 고정이 아니다', async () => {
+    const clockAt = Date.parse('2026-09-18T10:00:00.000Z');
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 1,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 1,
+          skippedUntilMs: clockAt + 3 * 60_000, // 3분 뒤에 열린다
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '남은 시간을 실제로 안 적었다').toContain('약 3분');
+    expect(r.content, '3분 남았는데 10분을 기다리게 했다').not.toContain('최대 10분');
+  });
+
+  it('★ 이미 지난 시각이면 "0분" 이 아니라 최소 1분으로 적는다', async () => {
+    const clockAt = Date.parse('2026-09-18T10:00:00.000Z');
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 1,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 1,
+          skippedUntilMs: clockAt - 5_000,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    // "0분 뒤" 는 지금 되는 것처럼 읽힌다
+    expect(r.content).toContain('약 1분');
+    expect(r.content).not.toContain('약 0분');
+  });
+
+  /**
+   * ★★ 이 창은 `5xx` 뿐 아니라 **무응답(timeout)에서도** 열린다. 무응답은 요청이
+   *   닿았는지조차 모르는 상태라, 검증이 올 것처럼 적으면 1분 전의 *"실패했습니다"* 와
+   *   서로 어긋나는 두 문장이 된다 (§3-a 틀리게 보내기).
+   */
+  it('★★ 창 안내가 "검증을 기다린다" 고 단정하지 않는다 — 무응답에서도 열리는 창이다', async () => {
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 1,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 1,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '무응답일 수도 있는데 검증을 기다린다고 단정했다').not.toContain(
+      '검증을 기다리는 중',
+    );
+    // ★ 조건부로 적는 것은 괜찮다 — 단정만 아니면 된다. "처리 중일 수 있어" 는
+    //   202(확실히 닿음)·5xx·무응답 셋 모두에 맞는 말이다.
+    expect(r.content).toContain('처리 중일 수 있어');
+  });
+
+  it('★ 시도가 있어도 창에 걸린 채널이 있으면 그 사실이 사라지지 않는다', async () => {
+    // 채널이 여럿이면 한쪽은 시도되고 한쪽은 창에 걸린다. head 만 보면 걸린 쪽이
+    // 문장에서 통째로 빠진다 — tail 이 그것을 붙든다.
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 3,
+          renewed: 0,
+          renewPending: 1,
+          renewFailed: 0,
+          skippedCooldown: 1,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '창에 걸린 채널이 문장에서 사라졌다').toContain('재요청을 막습니다');
+  });
+
+  it('★ 대기도 시도도 없으면 "없습니다" 가 맞다', async () => {
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 2,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 0,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('갱신할 구독이 없습니다');
+  });
+
   it('★★ 실패하면 "눌러도 같다" 를 말한다 — 안 적으면 장애 중에 연타한다', async () => {
     const { cmd } = make({
-      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewFailed: 2 }),
+      renewNow: () => Promise.resolve({ checked: 2, renewed: 0, renewPending: 0, renewFailed: 2, skippedCooldown: 0 }),
     });
     const r = await cmd.execute(OPERATOR);
     expect(r.content).toContain('2건이 실패');

@@ -8,7 +8,10 @@ import {
   LEASE_RENEW_AT_ELAPSED_RATIO,
   WEBSUB_BACKOFF_MAX_SEC,
   WEBSUB_BUDGET_MS,
+  WEBSUB_PENDING_BACKOFF_MAX_SEC,
   WEBSUB_SWEEP_SEC,
+  RESUBSCRIBE_COOLDOWN_MS,
+  hubDelivery,
   renewBackoffMs,
   TOPIC_URL_BASE,
   YOUTUBE_HUB_URL,
@@ -149,6 +152,90 @@ describe('★★ 구독 재시도 백오프 — 재시도가 막힘을 유지시
 
   it('★ 첫 실패의 대기는 스윕 주기보다 길다 — 아니면 게이트가 아무 일도 안 한다', () => {
     expect(renewBackoffMs(1, WEBSUB_SWEEP_SEC)).toBeGreaterThan(WEBSUB_SWEEP_SEC * 1_000);
+  });
+
+  it('★★ 미정 상한은 확정 실패보다 짧다 — 성사 가능한 시도를 1시간씩 버리면 안 된다', () => {
+    expect(WEBSUB_PENDING_BACKOFF_MAX_SEC).toBeLessThan(WEBSUB_BACKOFF_MAX_SEC);
+    expect(renewBackoffMs(100, 300, WEBSUB_PENDING_BACKOFF_MAX_SEC)).toBe(
+      WEBSUB_PENDING_BACKOFF_MAX_SEC * 1_000,
+    );
+    // 같은 스트릭인데 미정 쪽이 더 빨리 다시 시도한다 — 그것이 이 상수의 존재 이유다
+    expect(renewBackoffMs(100, 300, WEBSUB_PENDING_BACKOFF_MAX_SEC)).toBeLessThan(
+      renewBackoffMs(100, 300),
+    );
+  });
+
+  it('★★ 미정 상한도 검증 대기 창보다는 길다 — 창 안에 또 두드리면 창이 무의미하다', () => {
+    // 미정은 `markRequested` 로 10분 창이 열린다. 백오프 상한이 그보다 짧으면
+    // 백오프가 먼저 풀려도 쿨다운에 막히므로, 상한은 창 이상이어야 뜻이 있다.
+    expect(WEBSUB_PENDING_BACKOFF_MAX_SEC * 1_000).toBeGreaterThanOrEqual(RESUBSCRIBE_COOLDOWN_MS);
+  });
+
+  it('★ 기본 상한은 확정 실패 쪽이다 — 새 호출자가 덜 두드리는 쪽으로 틀리게', () => {
+    expect(renewBackoffMs(100, 300)).toBe(WEBSUB_BACKOFF_MAX_SEC * 1_000);
+  });
+});
+
+/**
+ * ★★ 이 블록이 지키는 문장: **`ok === false` 는 "실패했다" 가 아니라 "모른다" 일 수 있다.**
+ *
+ *   실측 2026-09-19 — 허브가 20초를 끌다 `503 Transient error` 를 돌려준 요청이
+ *   2분 뒤 검증 GET 을 받아 5일짜리 리스로 성사됐다. 같은 요청을 두 채널에 보냈는데
+ *   응답은 초 단위까지 같았고 결과만 갈렸다. 허브는 확률적으로 처리한다.
+ */
+describe('★★ hubDelivery — 503 을 실패로 단정하지 않는다', () => {
+  it('요청을 받고 나서 난 오류(500·502·503·504)만 may-be-accepted 다', () => {
+    expect(hubDelivery({ kind: 'http', status: 503 })).toBe('may-be-accepted'); // 관측된 것
+    expect(hubDelivery({ kind: 'http', status: 500 })).toBe('may-be-accepted');
+    expect(hubDelivery({ kind: 'http', status: 502 })).toBe('may-be-accepted');
+    expect(hubDelivery({ kind: 'http', status: 504 })).toBe('may-be-accepted');
+  });
+
+  /**
+   * ★★ `>= 500` 으로 뭉뚱그리면 이 둘까지 미정이 된다. 5xx 지만 **4xx 와 같은 확정
+   *   거절**이라, 30분 상한과 "기다리면 붙는다" 를 물리면 4xx 를 미정에서 뺀 이유
+   *   ("설정이 틀려서 영영 안 붙는 상태를 10분 창 뒤에 숨긴다")가 그대로 되돌아온다.
+   */
+  it('★★ 501·505·511 은 5xx 라도 거절이다 — 재시도해도 같은 답이다', () => {
+    expect(hubDelivery({ kind: 'http', status: 501 })).toBe('rejected'); // Not Implemented
+    expect(hubDelivery({ kind: 'http', status: 505 })).toBe('rejected'); // HTTP Version Not Supported
+    expect(hubDelivery({ kind: 'http', status: 511 })).toBe('rejected'); // Network Auth Required
+    expect(hubDelivery({ kind: 'http', status: 599 })).toBe('rejected');
+  });
+
+  it('★★ 4xx 는 거절이다 — 거절된 요청까지 기다리면 영영 안 붙는 상태를 숨긴다', () => {
+    expect(hubDelivery({ kind: 'http', status: 400 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 403 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 404 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 429 })).toBe('rejected');
+    expect(hubDelivery({ kind: 'http', status: 499 })).toBe('rejected');
+  });
+
+  it('★★ 타임아웃은 no-answer 다 — 닿았는지 모를 뿐, 곧 붙는다는 뜻이 아니다', () => {
+    // 이 구분이 30분 상한과 "저절로 완료" 문구를 5xx 에만 묶는다. 무응답은 오히려
+    // 우리가 조여지고 있다는 신호(2026-09-10)라 덜 두드려야 한다.
+    expect(hubDelivery({ kind: 'timeout' })).toBe('no-answer');
+  });
+
+  /**
+   * ★★ `budget` 은 **거절**이다. 예산 소진은 두 경로인데 둘 다 기다릴 이유가 없다:
+   *   `remaining <= 0` 은 요청을 보내지도 않은 것이고(`http-budget.ts` 의
+   *   `http-budget-wiring.test.ts` 가 `expect(spy).not.toHaveBeenCalled()` 로 못 박는다),
+   *   나머지 하나는 **429 의 `Retry-After` 가 예산을 넘긴 경우** — 허브가 속도를
+   *   줄이라고 명시한 것이다. 이것을 "기다리면 붙는다" 로 접으면 오지 않을 검증을
+   *   기다리게 하면서 30분마다 두드린다.
+   */
+  it('★★ 예산 초과는 거절이다 — 미전송이거나 429 인데, 둘 다 기다릴 이유가 없다', () => {
+    expect(hubDelivery({ kind: 'budget' })).toBe('rejected');
+  });
+
+  it('★ 네트워크 오류는 거절이다 — 요청이 닿지 않았다', () => {
+    expect(hubDelivery({ kind: 'network' })).toBe('rejected');
+    expect(hubDelivery({ kind: 'not-text' })).toBe('rejected');
+  });
+
+  it('★ status 를 모르는 http 는 미정으로 치지 않는다 — 근거 없이 기다리게 된다', () => {
+    expect(hubDelivery({ kind: 'http', status: undefined })).toBe('rejected');
   });
 });
 

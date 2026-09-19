@@ -27,6 +27,7 @@ import { createUploadFlow, type UploadFlow } from '../../src/youtube/upload-flow
 import {
   RESUBSCRIBE_COOLDOWN_MS,
   createWebSubClient,
+  topicUrl,
   type LeaseWarning,
   type WebSubClient,
 } from '../../src/youtube/websub-client.js';
@@ -87,6 +88,12 @@ interface FakeNet {
   maxConcurrentHub: number;
   /** 허브가 구독 요청을 받아 주는가 */
   hubAccepts: boolean;
+  /**
+   * 거절할 때 돌려줄 상태 코드. 기본 503(=미정).
+   *
+   * ★ 4xx 로 바꾸면 **확정 실패**가 된다 — 그 둘을 가르는 것이 `hubDelivery` 다.
+   */
+  hubRejectStatus: number;
   /** 허브가 검증 GET 을 곧바로 보내는가 */
   autoVerify: boolean;
   /** 허브가 검증에 실어 보내는 `hub.lease_seconds`. undefined 면 싣지 않는다 */
@@ -111,6 +118,15 @@ interface Harness {
   post: Route;
   /** 서명된 푸시 1건. `secret` 을 주면 그것으로 서명한다 (AC-P5) */
   push(xml: string, secret?: string): Promise<RouteResponse>;
+  /**
+   * 허브가 **뒤늦게** 검증 GET 을 보낸다.
+   *
+   * ★★ `autoVerify` 로는 이 상황을 만들 수 없다. 그쪽은 subscribe 응답 **안에서**
+   *   검증을 보내므로 `503` 이 돌아오기 전에 리스가 먼저 찍힌다. 실측(2026-09-19)은
+   *   반대 순서였다 — 503 을 받고 **2분 뒤**에 검증이 왔다. 그 순서라야
+   *   "실패로 낙인찍힌 구독이 나중에 살아난다" 를 시험할 수 있다.
+   */
+  verifyLate(): Promise<void>;
   /** AC-26 시딩만 마쳐 둔다 — 이후 폴·푸시가 통상 경로를 타게 한다 */
   seed(): Promise<void>;
   close(): void;
@@ -138,6 +154,7 @@ function build(opts: BuildOptions = {}): Harness {
     feedHits: 0,
     maxConcurrentHub: 0,
     hubAccepts: true,
+    hubRejectStatus: 503,
     autoVerify: opts.autoVerify ?? true,
     leaseSeconds: 'leaseSeconds' in opts ? opts.leaseSeconds : 4_000,
   };
@@ -197,7 +214,7 @@ function build(opts: BuildOptions = {}): Harness {
   async function respondHub(form: URLSearchParams): Promise<Response> {
     if (!net.hubAccepts) {
       return new Response('허브가 거절했습니다', {
-        status: 503,
+        status: net.hubRejectStatus,
         headers: { 'content-type': 'text/plain' },
       });
     }
@@ -354,6 +371,10 @@ function build(opts: BuildOptions = {}): Harness {
     async seed(): Promise<void> {
       net.feeds.set(CH, EMPTY_FEED);
       await poller.pollOnce(CH);
+    },
+
+    async verifyLate(): Promise<void> {
+      await deliverVerification(`${CALLBACK}?channel=${CH}`, 'subscribe', topicUrl(CH));
     },
 
     close(): void {
@@ -977,6 +998,204 @@ describe('AC-P7 — 갱신 연속 실패', () => {
   });
 });
 
+/**
+ * ★★ **허브의 `503` 은 "실패" 가 아니라 "모른다" 다** (실측 2026-09-19).
+ *
+ *   허브(`pubsubhubbub.appspot.com`)는 구독 요청에 20초를 끌다 `503 Transient error` 를
+ *   돌려주면서 **뒤에서는 그 구독을 처리하고 몇 분 뒤 검증 GET 을 보낸다.** 같은 요청을
+ *   두 채널에 보냈더니 응답은 초 단위까지 같았는데(둘 다 503 / 20.29초) 한쪽만 붙었다.
+ *
+ *   이것을 실패로 단정하면 검증을 기다리는 창이 안 열려 **같은 구독을 또 요청한다.**
+ *   그 중복이 2026-09-09 에 우리 IP 를 구글에 조이게 한 경로다.
+ */
+describe('★★ 503 은 미정이다 — 검증 대기 창을 연다', () => {
+  it('★★ 미정이면 창이 열려 중복 요청이 막힌다 (백오프를 지워도)', async () => {
+    const h = harness();
+    h.net.hubAccepts = false; // 503
+    await h.websub.sweep();
+    expect(h.net.hubRequests).toHaveLength(1);
+    expect(h.subs.get(CH)?.subscribedAt, '미정인데 검증 대기 창이 안 열렸다').toBeDefined();
+
+    // ★ `renewNow` 는 우리 백오프를 **지운다.** 그러므로 여기서 남는 브레이크는
+    //   `markRequested` 가 연 쿨다운뿐이다 — 이 단언이 곧 그 호출의 반공허 증명이다.
+    await h.websub.renewNow();
+    expect(h.net.hubRequests, '검증 대기 창을 무시하고 허브를 또 두드렸다').toHaveLength(1);
+  });
+
+  it('★★ 503 뒤에 늦게 온 검증이 구독을 살린다 — 실패로 낙인찍혀 있어도', async () => {
+    const h = harness();
+    h.net.hubAccepts = false;
+    await h.websub.sweep();
+    expect(h.subs.get(CH)?.expiresAt, '아직 검증 전이다').toBeUndefined();
+    expect(h.subs.get(CH)?.lastRenewError).toContain('http');
+
+    // 허브가 2분 뒤 검증을 보낸다 (실측된 지연)
+    h.clock.advance(2 * 60_000);
+    await h.verifyLate();
+
+    expect(h.subs.get(CH)?.expiresAt, '늦게 온 검증이 반영되지 않았다').toBeDefined();
+    expect(h.subs.get(CH)?.leaseSeconds).toBe(4_000);
+  });
+
+  /**
+   * ★★ **늦게 온 검증이 실패 episode 를 닫아야 한다.**
+   *
+   *   닫지 않으면 `expires_at` 이 미래로 밀려 `dueForRenew` 가 2.5일간 거짓이 되고,
+   *   그동안 `attempt()` 가 불리지 않으므로 스트릭이 **1 인 채로 굳는다.** 다음 갱신
+   *   주기마다 1씩 쌓여 3회째에 *"갱신 3회 연속 실패"* 경보가 뜨는데, 실제로는
+   *   **세 번 다 성공한** 것이다 (§3-a 틀리게 보내기). 게다가 `stuck-watch` 가
+   *   `alerted` 를 세워 버리므로 **진짜 장애 때는 경보가 안 뜬다** (안 보내기).
+   */
+  it('★★ 늦게 온 검증이 실패 스트릭을 푼다 — 성공 3번이 "연속 실패" 로 쌓이면 안 된다', async () => {
+    const h = harness();
+
+    // 503 → 늦은 검증 → 성사. 실측된 그 경로를 세 주기 반복한다.
+    for (let i = 0; i < 3; i++) {
+      h.net.hubAccepts = false;
+      await h.websub.sweep();
+      h.clock.advance(2 * 60_000); // 실측된 검증 지연
+      await h.verifyLate();
+      expect(h.subs.get(CH)?.expiresAt, `${String(i)}번째 주기에서 안 붙었다`).toBeDefined();
+      h.clock.advance(3_000 * 1_000); // 리스 4000초의 50% 를 지나 다시 갱신 때가 된다
+    }
+
+    expect(h.alerts, '성공한 갱신 3번이 "3회 연속 실패" 경보가 됐다').toHaveLength(0);
+  });
+
+  /**
+   * ★ **짧은 리스라야 이 단언이 공허하지 않다.** 기본 리스(4000초)에서는 갱신 시점
+   *   (50% = 2000초)이 백오프 상한(1800초)보다 늦어 백오프가 **어차피 자연 만료된다** —
+   *   `nextAttemptAtMs.delete` 를 지워도 테스트가 통과한다(실제로 확인했다).
+   *   허브가 짧은 리스를 주는 경우에만 차이가 드러나고, 이 코드베이스는 리스를
+   *   상수로 박지 않기로 했으므로(`parseLeaseSeconds` 머리말) 그 경우가 실재한다.
+   */
+  it('★ 늦게 온 검증은 백오프도 푼다 — 리스가 짧으면 다음 주기가 백오프에 막힌다', async () => {
+    const h = harness({ leaseSeconds: 60 }); // 짧은 리스라야 백오프가 갱신 시점보다 늦다
+    h.net.hubAccepts = false;
+
+    // ★ 스트릭을 2까지 올린다. 스트릭 1 이면 백오프(600초)가 쿨다운(600초)과 같아
+    //   무엇이 막았는지 갈리지 않는다 — 2 면 백오프가 1200초로 벌어져 **쿨다운이
+    //   풀린 뒤에도 남는 구간**이 생기고, 거기서만 "검증이 백오프를 풀었다" 를 말할 수 있다.
+    await h.websub.sweep(); // t=0   streak 1, 백오프 600초
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.sweep(); // t=601 streak 2, 백오프 1200초 → t=1801 까지
+
+    h.clock.advance(2 * 60_000); // t=721
+    await h.verifyLate(); // 성사 — 여기서 백오프가 풀려야 한다
+    expect(h.subs.get(CH)?.expiresAt).toBeDefined();
+
+    h.net.hubAccepts = true;
+    const before = h.net.hubRequests.length;
+    // t=1322 — 쿨다운(t=1201)은 지났고 백오프(t=1801)는 남아 있는 구간이다
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests.length, '검증으로 살아났는데 백오프가 남아 다음 갱신을 막았다').toBe(
+      before + 1,
+    );
+  });
+
+  /**
+   * ★★ **구독은 붙었는데 만료를 모르는 상태**는 눈이 전부 감긴다.
+   *
+   *   `expires_at` 이 NULL 이라 리스 잔여 경보가 평가되지 않고(`runSweep` 의 게이트),
+   *   `recordLease` 의 SQL 이 `last_renew_error` 를 **무조건 비우므로** 런북의 진단
+   *   질의(§7-b)에는 멀쩡한 행으로 보인다. 그래서 사유를 다시 적는다.
+   *
+   * ★ `autoVerify: false` + `verifyLate()` 라야 실제 순서다. 허브는 202 를 주고
+   *   **그 뒤에** 검증을 보내므로 `clearRenewError` 가 먼저, 이 기록이 나중이다.
+   *   하니스의 `autoVerify` 는 응답 **안에서** 검증을 보내 순서가 뒤집힌다.
+   */
+  it('★★ 리스 없는 검증은 사유를 남긴다 — recordLease 가 방금 지웠기 때문이다', async () => {
+    const h = harness({ leaseSeconds: undefined, autoVerify: false });
+    await h.websub.sweep(); // 202 → clearRenewError
+    await h.verifyLate(); // 검증 도착, 그런데 lease_seconds 가 없다
+
+    expect(h.subs.get(CH)?.expiresAt, '리스가 없는데 만료가 찍혔다').toBeUndefined();
+    expect(
+      h.subs.get(CH)?.lastRenewError,
+      '붙었지만 만료를 모르는 상태가 DB 에 아무 흔적도 안 남았다',
+    ).toContain('lease_seconds');
+  });
+
+  it('★★ 4xx 는 확정 실패다 — 창을 열지 않는다 (영영 안 붙는 상태를 숨기면 안 된다)', async () => {
+    const h = harness();
+    h.net.hubAccepts = false;
+    h.net.hubRejectStatus = 404;
+    await h.websub.sweep();
+    expect(h.net.hubRequests).toHaveLength(1);
+    expect(h.subs.get(CH)?.subscribedAt, '거절당했는데 기다리는 창을 열었다').toBeUndefined();
+
+    // 백오프만 지우면 곧바로 다시 시도한다 — 기다릴 이유가 없기 때문이다.
+    await h.websub.renewNow();
+    expect(h.net.hubRequests).toHaveLength(2);
+  });
+
+  it('★ 집계가 미정과 실패를 가른다 — 한 칸으로 합치면 명령이 오보한다', async () => {
+    const h = harness();
+    h.net.hubAccepts = false;
+
+    const pending = await h.websub.renewNow();
+    expect(pending.renewPending).toBe(1);
+    expect(pending.renewFailed).toBe(0);
+
+    h.net.hubRejectStatus = 400;
+    h.clock.advance(RESUBSCRIBE_COOLDOWN_MS + 1_000);
+    const failed = await h.websub.renewNow();
+    expect(failed.renewPending).toBe(0);
+    expect(failed.renewFailed).toBe(1);
+  });
+
+  it('★★ 미정이 쌓여도 30분마다는 다시 친다 — 1시간은 성사 가능한 시도를 버린다', async () => {
+    const h = harness();
+    h.net.hubAccepts = false; // 503 = 미정
+
+    // 상한에 닿을 만큼 스트릭을 올린다 (매번 넉넉히 밀어 백오프를 확실히 푼다)
+    for (let i = 0; i < 5; i++) {
+      await h.websub.sweep();
+      h.clock.advance(61 * 60_000);
+    }
+    await h.websub.sweep();
+    const n = h.net.hubRequests.length;
+
+    // ★ 31분 — 미정 상한(30분)은 지났고 확정 실패 상한(1시간)은 아직이다.
+    //   이 한 칸이 두 상한을 가른다.
+    h.clock.advance(31 * 60_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests.length, '미정인데 30분이 지나도 다시 치지 않았다').toBe(n + 1);
+  });
+
+  it('★ 확정 실패는 30분에 치지 않는다 — 미정 상한이 확정 실패까지 앞당기면 안 된다', async () => {
+    const h = harness();
+    h.net.hubAccepts = false;
+    h.net.hubRejectStatus = 400; // 확정 실패
+
+    for (let i = 0; i < 5; i++) {
+      await h.websub.sweep();
+      h.clock.advance(61 * 60_000);
+    }
+    await h.websub.sweep();
+    const n = h.net.hubRequests.length;
+
+    h.clock.advance(31 * 60_000);
+    await h.websub.sweep();
+    expect(h.net.hubRequests.length, '확정 실패인데 1시간을 안 기다렸다').toBe(n);
+  });
+
+  it('★ 미정에도 실패 사유와 스트릭은 남는다 — 안 붙는 상태를 감추지 않는다', async () => {
+    const h = harness();
+    h.net.hubAccepts = false;
+
+    await h.websub.sweep();
+    h.clock.advance(60 * 60_000);
+    await h.websub.sweep();
+    h.clock.advance(60 * 60_000);
+    await h.websub.sweep();
+
+    expect(h.subs.get(CH)?.lastRenewError, '미정이라고 사유를 안 남겼다').toContain('http');
+    expect(h.alerts, '미정이 3회 이어졌는데 경보가 없다').toHaveLength(1);
+  });
+});
+
 // ══════════════════════════════════════════════════════════════════
 //  구독 → 푸시 전 구간
 // ══════════════════════════════════════════════════════════════════
@@ -1098,21 +1317,32 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
   });
 
   it('★★ renewNow 는 백오프를 지우고 즉시 친다 — 수동 갱신이 버는 것이 이것뿐이다', async () => {
-    // 자동 갱신은 이미 돈다. 이 함수가 버는 것은 백오프 상한(1시간)만큼의 시간뿐이다.
+    // 자동 갱신은 이미 돈다. 이 함수가 버는 것은 백오프 상한만큼의 시간뿐이다.
     const h = harness();
     h.net.hubAccepts = false;
     h.net.autoVerify = false;
 
+    /**
+     * ★★ **스트릭을 2까지 올려야 이 테스트가 공허하지 않다.** 미정(503)은
+     *   `markRequested` 로 10분 쿨다운도 함께 걸리는데, 스트릭 1 의 백오프도 정확히
+     *   10분(`sweepSec 300 × 2`)이라 둘이 겹쳐 무엇이 막았는지 갈리지 않는다.
+     *   스트릭 2 면 백오프가 20분으로 벌어져 **쿨다운이 풀린 뒤에도 남는 구간**이
+     *   생기고, 거기서만 "백오프를 뚫었다" 를 말할 수 있다.
+     */
     await h.websub.sweep();
     expect(h.net.hubRequests).toHaveLength(1);
 
-    // 백오프 중이라 sweep 은 아무것도 안 한다.
+    h.clock.advance(11 * 60_000); // 쿨다운(10분) · 백오프(10분) 둘 다 풀린다
     await h.websub.sweep();
-    expect(h.net.hubRequests, '백오프가 안 걸렸다').toHaveLength(1);
+    expect(h.net.hubRequests, '둘 다 풀렸는데 시도하지 않았다').toHaveLength(2);
+
+    h.clock.advance(11 * 60_000); // 쿨다운은 풀리고 백오프(20분)만 남는다
+    await h.websub.sweep();
+    expect(h.net.hubRequests, '백오프가 안 걸렸다').toHaveLength(2);
 
     // renewNow 는 그 백오프를 지우고 지금 친다.
     await h.websub.renewNow();
-    expect(h.net.hubRequests, 'renewNow 가 백오프를 뚫지 못했다').toHaveLength(2);
+    expect(h.net.hubRequests, 'renewNow 가 백오프를 뚫지 못했다').toHaveLength(3);
   });
 
   it('★★ 스윕이 도는 중에 renewNow 를 불러도 채널당 한 번만 나간다', async () => {
@@ -1139,10 +1369,18 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     await running;
     await manual;
 
-    // ★★ 요청 **수**로는 안 드러난다 — 겹치든 순차든 둘 다 2건이다.
-    //   드러나는 것은 **동시에 떠 있었는가** 다.
+    // ★★ **동시에 떠 있었는가**가 겹침 가드의 판정값이다. 순차로 접혔다면 1 이다.
     expect(h.net.maxConcurrentHub, '스윕과 수동 갱신의 구독 요청이 동시에 떠 있었다').toBe(1);
-    expect(h.net.hubRequests.length).toBe(2);
+
+    /**
+     * ★★ 요청은 **1건**이다. 가드가 둘을 순차로 접으면 뒤따르는 `renewNow` 는
+     *   앞 스윕이 열어 둔 검증 대기 창(미정 → `markRequested`) 안에 떨어져 재요청을
+     *   포기한다. 즉 이 수정 뒤로는 두 브레이크가 **겹쳐서** 듣는다.
+     *
+     * ★ 가드를 빼면 둘 다 깨진다 — 동시에 뜨므로 `maxConcurrentHub` 가 2 가 되고,
+     *   창이 열리기 전에 둘 다 나가므로 요청도 2건이 된다. 반공허는 그렇게 지켜진다.
+     */
+    expect(h.net.hubRequests.length, '검증 대기 창을 뚫고 두 번 나갔다').toBe(1);
   });
 
   it('★★ renewNow 도 재구독 쿨다운은 지키지 않는다 — 검증 대기 중에 폭탄을 쏘지 않게', async () => {

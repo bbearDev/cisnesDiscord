@@ -4,7 +4,7 @@ import type { StuckAlert, StuckWatch } from '../live/stuck-watch.js';
 import type { Clock, Disposable } from '../runtime/clock.js';
 import type { WebSubSubRepo, WebSubSubRow } from '../store/repos/websub-sub-repo.js';
 import type { YoutubeChannelRepo } from '../store/repos/youtube-channel-repo.js';
-import type { TextClient } from './http-text.js';
+import type { TextClient, TextFailureKind } from './http-text.js';
 
 /**
  * WebSub 구독 관리 — 계획 §5.3 "WebSub 운영 규칙" (AC-20 · AC-P7).
@@ -92,16 +92,20 @@ export const RESUBSCRIBE_COOLDOWN_MS = 10 * 60_000;
 export const WEBSUB_BUDGET_MS = 45_000;
 
 /**
- * 구독 재시도 백오프 — **연속 실패마다 2배, 상한 1시간.**
+ * 구독 재시도 백오프 — **연속 실패마다 2배.** 상한은 호출부가 정한다
+ * (확정 실패 1시간 / 5xx 30분 — `WEBSUB_PENDING_BACKOFF_MAX_SEC`).
  *
  * ★★ 왜 필요한가 (실측 2026-09-10). 구독이 확정되지 않으면 스윕이 매번 "갱신해야 함"
  *   으로 읽어 **5분마다 영원히 재시도한다.** 하루 414건이 나갔고, 그 상대는 우리 IP 를
  *   이미 간헐적으로 조이고 있는 구글이다(같은 날 RSS 피드도 간헐 차단됐다).
  *   즉 재시도 자체가 **막힌 상태를 유지시키는 쪽**으로 일한다.
  *
- * ★ `RESUBSCRIBE_COOLDOWN_MS` 는 이 경우를 못 막는다 — 그 쿨다운은 `subscribed_at`
- *   기준이고 그 값은 **202 를 받았을 때만** 갱신된다. 한 번도 못 받으면 쿨다운은
- *   영원히 통과다. 실패 쪽 브레이크가 따로 있어야 한다.
+ * ★ `RESUBSCRIBE_COOLDOWN_MS` 는 **확정 실패**를 못 막는다 — 그 쿨다운은 `subscribed_at`
+ *   기준인데 4xx·network 에서는 그 값이 갱신되지 않아 쿨다운이 영원히 통과다.
+ *   실패 쪽 브레이크가 따로 있어야 하는 이유다.
+ *
+ *   ⚠️ 미정(5xx·timeout)은 다르다. 2026-09-19 부터 그쪽은 `markRequested` 를 걸어
+ *   쿨다운이 함께 잡으므로 이 백오프와 **둘 중 긴 쪽**이 실질 간격이 된다.
  *
  * ★ 상한이 1시간인 이유: 리스 갱신은 리스의 50% 시점(유튜브 기준 보통 2일 이상)이라
  *   1시간 지연이 갱신 기한을 위협하지 않는다. 그보다 길면 **막힘이 풀린 뒤 복귀가
@@ -130,15 +134,99 @@ export const WEBSUB_BACKOFF_FACTOR = 2;
 export const WEBSUB_BACKOFF_MAX_SEC = 3_600;
 
 /**
+ * **미정**(허브가 받았을 수도 있는 실패) 쪽 재시도 상한 — 확정 실패의 절반이다.
+ *
+ * ★★ 왜 따로 두는가 (실측 2026-09-19). 확정 실패는 기다릴수록 이득이지만 미정은
+ *   **다음 시도가 곧 성사일 수 있다.** 같은 요청을 두 채널에 보냈더니 응답은 둘 다
+ *   `503` 에 20.29초로 초 단위까지 같았는데 한쪽만 2분 뒤 검증이 왔다 — 즉 허브는
+ *   **확률적으로** 처리한다. 성사 가능한 시도를 1시간씩 버리면 만료된 구독이
+ *   그만큼 오래 죽어 있는다.
+ *
+ * ★ 그렇다고 상한을 없애면 안 된다. 미정은 `RESUBSCRIBE_COOLDOWN_MS`(10분)가 하한을
+ *   잡아 주지만 그것만으로는 채널당 하루 144회다 — 2026-09-10 에 하루 414건으로
+ *   구글에 조였던 전례가 있다. 30분이면 채널당 48회로, 붙을 기회는 남기고 부하는 던다.
+ */
+export const WEBSUB_PENDING_BACKOFF_MAX_SEC = 1_800;
+
+/**
  * 연속 실패 `streak` 회일 때 다음 시도까지 기다릴 밀리초.
  *
  * ★ `streak` 은 `stuck-watch` 가 세는 값을 그대로 쓴다 — 여기서 또 세면 같은 규칙이
  *   두 곳에 생기고, 하필 지표(`websub_renew_fail_streak`)와 어긋나는 날이 온다.
+ *
+ * ★ `maxSec` 은 호출부가 정한다 (확정 실패 1시간 / 미정 30분). 기본값을 확정 실패로
+ *   둔 것은 이 함수를 부르는 새 자리가 생겼을 때 **덜 두드리는 쪽**으로 틀리기 위해서다.
  */
-export function renewBackoffMs(streak: number, sweepSec: number): number {
+export function renewBackoffMs(
+  streak: number,
+  sweepSec: number,
+  maxSec: number = WEBSUB_BACKOFF_MAX_SEC,
+): number {
   if (streak <= 0) return 0;
-  const sec = Math.min(sweepSec * WEBSUB_BACKOFF_FACTOR ** streak, WEBSUB_BACKOFF_MAX_SEC);
+  const sec = Math.min(sweepSec * WEBSUB_BACKOFF_FACTOR ** streak, maxSec);
   return Math.floor(sec * 1_000);
+}
+
+/**
+ * 실패한 구독 요청이 **허브에서 어떻게 끝났는가.**
+ *
+ * ★★ 이 판정이 존재하는 이유 (실측 2026-09-19). 허브(`pubsubhubbub.appspot.com`)는
+ *   구독 요청에 20초를 끌다 `503 Transient error; please try again later` 를 돌려주면서
+ *   **뒤에서는 그 구독을 처리하고 검증 GET 을 보낸다.** 실제로 503 을 받은 요청이
+ *   2분 뒤 검증돼 5일짜리 리스가 붙었다. 즉 `ok === false` 는 *"실패했다"* 가 아니라
+ *   *"결과를 모른다"* 일 수 있다.
+ *
+ * ★★ **불리언 하나로는 모자란다.** 이 판정에 달린 결정이 셋인데 서로 범위가 다르다:
+ *
+ *   |                         | 검증 대기 창 | 30분 상한 | *"기다리면 붙는다"* 문구 |
+ *   |-------------------------|:-----------:|:--------:|:----------------------:|
+ *   | `may-be-accepted` (5xx) |      ○      |    ○     |           ○            |
+ *   | `no-answer` (timeout)   |      ○      |    ✕     |           ✕            |
+ *   | `rejected` (4xx·network)|      ✕      |    ✕     |           ✕            |
+ *
+ *   가운뎃줄이 요점이다. 응답을 못 받았으면 **중복 요청은 막아야 하지만**(닿았을 수
+ *   있다), 30분 상한과 "곧 붙는다" 는 *503 응답이 20.29초에 도착한* 관측에서 나온
+ *   것이지 무응답에서 나온 것이 아니다. 무응답은 오히려 우리가 조여지고 있다는
+ *   신호(2026-09-10)에 가까우므로 **덜 두드려야** 한다. 모르는 것은 모른다고 둔다 (§3-a).
+ *
+ * ★★ `budget` 이 `rejected` 인 이유 — 여기를 틀리면 조용히 나쁘다. 예산 소진은 두
+ *   경로인데(`runtime/http-budget.ts`) **둘 다 기다릴 이유가 없다**:
+ *     · `remaining <= 0` — 요청을 **보내지도 않았다**
+ *     · 429 의 `Retry-After` 가 예산을 넘김 — 허브가 **명시적으로 거절**했다
+ *   특히 뒤엣것을 "기다리면 붙는다" 로 접으면, 속도를 줄이라고 말한 상대를
+ *   30분마다 두드리면서 운영자에게는 오지 않을 검증을 기다리라고 하게 된다.
+ *
+ * ★ `4xx` 를 미정에서 뺀 것도 같은 이유다. 거절된 요청까지 "기다려 보자" 로 접으면
+ *   **설정이 틀려서 영영 안 붙는 상태**를 10분 창 뒤에 숨기게 된다.
+ */
+export type HubDelivery =
+  /** 5xx — 허브가 받았고 뒤에서 처리 중일 수 있다 (실측된 경로) */
+  | 'may-be-accepted'
+  /** 응답을 못 받았다 — 닿았는지 모른다 */
+  | 'no-answer'
+  /** 거절당했거나 닿지 않았다 */
+  | 'rejected';
+
+export function hubDelivery(r: {
+  kind: TextFailureKind;
+  status?: number | undefined;
+}): HubDelivery {
+  switch (r.kind) {
+    case 'http':
+      // ★★ `>= 500` 이 아니라 **넷을 적는다.** 관측은 503 하나이고, 그 논리가 번지는
+      //   범위는 "요청을 받고 나서 난 오류"(500·502·503·504)까지다. `501 Not Implemented`
+      //   와 `505 HTTP Version Not Supported` 는 5xx 지만 **4xx 와 같은 확정 거절**이라,
+      //   여기에 30분 상한과 "기다리면 붙는다" 를 물리면 4xx 를 뺀 이유가 그대로 되돌아온다.
+      return r.status === 500 || r.status === 502 || r.status === 503 || r.status === 504
+        ? 'may-be-accepted'
+        : 'rejected';
+    case 'timeout':
+      return 'no-answer';
+    case 'budget':
+    case 'network':
+    case 'not-text':
+      return 'rejected';
+  }
 }
 
 /** 시크릿 길이(바이트). HMAC-SHA1 의 블록(64B)보다 짧게 잡아 내부 해싱을 피한다 */
@@ -208,7 +296,13 @@ export type SubscribeMode = 'subscribe' | 'unsubscribe';
 
 export type SubscribeOutcome =
   | { ok: true; status: number }
-  | { ok: false; reason: string; status?: number };
+  /**
+   * ★ `delivery` 는 *"허브에서 어떻게 끝났는가"* — `hubDelivery` 의 판정이다.
+   *   `ok: false` 와 겹쳐 보이지만 다른 축이다: `ok` 는 **우리가 확인을 받았는가**,
+   *   `delivery` 는 **상대가 일을 시작했을 수 있는가**. 둘을 한 불리언으로 접으면
+   *   503 을 실패로 단정하던 그 결함으로 돌아간다.
+   */
+  | { ok: false; delivery: HubDelivery; reason: string; status?: number };
 
 export interface VerificationInput {
   channelId: string;
@@ -235,7 +329,38 @@ export interface LeaseWarning {
 export interface SweepOutcome {
   checked: number;
   renewed: number;
+  /**
+   * `may-be-accepted`(5xx)로 판정된 시도만 (`hubDelivery`).
+   *
+   * ★ `renewFailed` 와 갈라 세는 이유는 운영자에게 하는 말이 다르기 때문이다.
+   *   "실패" 는 *"다시 눌러도 같다"* 이고 "미정" 은 *"곧 붙을 수 있으니 기다려라"* 다.
+   *   한 칸으로 합치면 `/구독갱신` 이 성사 직전인 구독을 실패로 보고한다.
+   *
+   * ⚠️ **무응답(`no-answer`)은 여기 안 들어온다** — 그쪽도 결과를 모르는 것은 같지만
+   *   *"곧 붙는다"* 는 근거가 없어 `renewFailed` 로 센다 (`hubDelivery` 의 표 가운뎃줄).
+   */
+  renewPending: number;
   renewFailed: number;
+  /**
+   * 갱신할 때가 됐는데 **검증 대기 창에 걸려 시도하지 않은** 채널 수.
+   *
+   * ★★ "시도할 게 없었다" 와 "기다리는 중이라 안 했다" 는 운영자에게 **다른 말**이다.
+   *   이 칸이 없으면 `/구독갱신` 이 둘을 *"갱신할 구독이 없습니다"* 한 문장으로 뭉뚱그리고,
+   *   바로 옆에 `잔여 0%` 가 붙어 나온다 — 앞 요청이 처리되는 중인데 운영자는
+   *   아무것도 안 하고 있다고 읽는다.
+   */
+  skippedCooldown: number;
+  /**
+   * 창에 걸린 채널 중 **가장 먼저 열리는** 시각(epoch ms). 걸린 게 없으면 `undefined`.
+   *
+   * ★ 창을 연 것이 운영자의 직전 클릭이 아니라 **주기 스윕**일 수 있다. 그때
+   *   `subscribed_at` 은 이미 몇 분 전이라 남은 시간이 10분보다 짧다 — 고정 문구로
+   *   "10분쯤 뒤에" 라고 적으면 3분 뒤에 열릴 창을 10분 기다리게 한다.
+   *
+   * ★ 남은 초가 아니라 **절대 시각**이다. 스윕이 끝나고 문구를 만들기까지의 지연에
+   *   값이 흔들리지 않는다.
+   */
+  skippedUntilMs?: number | undefined;
   warnings: LeaseWarning[];
   /** `stuck-watch` 가 이번 스윕에서 발화한 것 (AC-P7 후반부) */
   alerts: StuckAlert[];
@@ -285,14 +410,22 @@ export interface WebSubClient {
   /**
    * **운영자 수동 갱신** — 실패 백오프를 지우고 즉시 스윕한다.
    *
-   * ★★ 자동 갱신은 이미 돌고 있다. 이 함수가 버는 것은 **백오프 상한(1시간)만큼의
+   * ★★ 자동 갱신은 이미 돌고 있다. 이 함수가 버는 것은 **백오프 상한만큼의
    *   시간**뿐이다 — 허브가 막 회복됐을 때 다음 시도를 기다리지 않고 지금 친다.
-   *   "자동이 안 되니 수동이 필요하다" 가 아니라 "자동이 최대 1시간 늦다" 이다.
+   *   "자동이 안 되니 수동이 필요하다" 가 아니라 "자동이 그만큼 늦다" 이다.
+   *   상한이 갈려 있으므로 실제로 버는 시간도 갈린다 — 확정 실패 최대 1시간,
+   *   5xx 최대 30분이다.
    *
-   * ★★ **`RESUBSCRIBE_COOLDOWN_MS` 는 지우지 않는다.** 그 쿨다운은 202 를 받은 뒤
-   *   검증을 기다리는 10분을 보호한다 — 그것까지 무시하면 허브가 검증하는 동안
-   *   운영자가 누를 때마다 재구독 폭탄이 나간다. 지우는 것은 **우리가 스스로 건
+   * ★★ **`RESUBSCRIBE_COOLDOWN_MS` 는 지우지 않는다.** 그 쿨다운은 **요청이 허브에
+   *   닿았을 때** 검증을 기다리는 10분을 보호한다 — 그것까지 무시하면 허브가 검증하는
+   *   동안 운영자가 누를 때마다 재구독 폭탄이 나간다. 지우는 것은 **우리가 스스로 건
    *   브레이크**뿐이다.
+   *
+   *   ⚠️ 2026-09-19 부터 그 창은 **202 뿐 아니라 `5xx`·무응답에서도 열린다**
+   *   (`hubDelivery`). 허브가 오류를 돌려주고도 뒤에서 처리하는 것이 관측됐기 때문이다.
+   *   그래서 미정 직후에 누르면 이 함수가 **아무것도 보내지 않는다** — 그것이 맞다.
+   *   그 경우 `SweepOutcome.skippedCooldown` 이 올라가고, 명령은 그것을 읽어
+   *   *"앞선 요청의 검증을 기다리는 중"* 이라고 답한다.
    */
   renewNow(): Promise<SweepOutcome>;
   /** 지표 스냅샷 */
@@ -354,7 +487,10 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
     mode: SubscribeMode = 'subscribe',
   ): Promise<SubscribeOutcome> {
     const row = ensureRow(channelId);
-    if (row === undefined) return { ok: false, reason: `설정에 없는 채널: ${channelId}` };
+    // ★ 요청을 보내지도 않았다 — 허브가 받았을 리 없으므로 미정이 아니다.
+    if (row === undefined) {
+      return { ok: false, delivery: 'rejected', reason: `설정에 없는 채널: ${channelId}` };
+    }
 
     const form = new URLSearchParams({
       'hub.callback': callbackFor(channelId),
@@ -380,13 +516,17 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
     }
     return {
       ok: false,
+      delivery: hubDelivery(r),
       reason: `${r.kind}: ${r.detail}`,
       ...(r.status === undefined ? {} : { status: r.status }),
     };
   }
 
+  /** 구독 시도 1건의 결과. **`pending` 이 `failed` 와 갈라져 있는 것이 핵심이다** */
+  type AttemptResult = 'renewed' | 'pending' | 'failed';
+
   /** 구독 시도 1건 + 결과를 `stuck-watch` 에 넘김 (AC-P7 후반부) */
-  async function attempt(channelId: string, out: StuckAlert[]): Promise<boolean> {
+  async function attempt(channelId: string, out: StuckAlert[]): Promise<AttemptResult> {
     const r = await subscribe(channelId);
     const now = clock.now();
     if (r.ok) {
@@ -396,23 +536,80 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
       //   (`rss-poller` 가 "한 채널이라도 성공하면 즉시 복귀" 로 둔 것과 같은 이유).
       nextAttemptAtMs.delete(channelId);
       log('websub 구독 요청을 허브가 받았습니다', { channelId, status: r.status });
-      return true;
+      return 'renewed';
     }
+
+    /** 허브가 받았을 수 있다 — 5xx 만. 30분 상한과 "기다리면 붙는다" 가 여기 달린다 */
+    const mayHaveAccepted = r.delivery === 'may-be-accepted';
+    /** 요청이 닿았는지 모른다 (5xx 이거나 무응답) — 검증 대기 창이 여기 달린다 */
+    const uncertain = mayHaveAccepted || r.delivery === 'no-answer';
+
+    /**
+     * ★★ **결과를 모르면 검증 대기 창을 연다.** `markRequested` 를 부르는 것이 이 수정의
+     *   심장이다 — `subscribed_at` 이 찍혀야 `RESUBSCRIBE_COOLDOWN_MS`(10분)가 걸리고,
+     *   그래야 허브가 검증을 보내는 동안 **같은 구독을 또 요청하지 않는다.**
+     *   실측(2026-09-19)에서 검증은 503 응답 2분 뒤에 왔다. 10분이면 충분히 덮는다.
+     *
+     * ★ 무응답(`no-answer`)도 창을 연다. 닿았는지 모르는데 또 보내면 **닿았을 때**
+     *   중복이 된다 — §3-a 는 늦는 것(1위)이 틀리는 것보다 낫다고 정해 두었다.
+     *
+     * ★ 확정 실패(`rejected`)에서는 부르지 않는다. 그쪽은 기다릴 것이 없고,
+     *   창을 열면 영영 안 붙는 상태를 10분씩 숨기게 된다.
+     */
+    if (uncertain) subs.markRequested(channelId, clock.date().toISOString());
+
+    /**
+     * ★ 미정에도 `setRenewError` 와 실패 스트릭은 **그대로 올린다.** 구독이 아직
+     *   확정되지 않은 것은 사실이고, 그 사실을 감추면 영영 안 붙는 상태를 아무도
+     *   모른다 (§3-a 의 "틀리게 보내기" 가 가장 나쁘다). 미정이 바꾸는 것은
+     *   **얼마나 기다릴지**이지 **알릴지 말지**가 아니다.
+     *
+     * ★★ 스트릭을 푸는 것은 **늦게 도착한 검증**이다 (`verify()`). 여기서만 풀면
+     *   503→검증 경로로 살아난 구독이 영영 "연속 실패" 로 남는다.
+     */
     subs.setRenewError(channelId, r.reason, clock.date().toISOString());
     await raise(stuck.observe('websub-renew', channelId, true, now), out);
-    const waitMs = renewBackoffMs(stuck.value('websub-renew', channelId, now), sweepSec);
+    const waitMs = renewBackoffMs(
+      stuck.value('websub-renew', channelId, now),
+      sweepSec,
+      // ★ 30분 상한은 **5xx 에서만**이다. 무응답에 이것을 물리면, 우리가 조여지고
+      //   있다는 신호에 대고 두 배로 두드리게 된다 (`hubDelivery` 머리말의 표).
+      mayHaveAccepted ? WEBSUB_PENDING_BACKOFF_MAX_SEC : WEBSUB_BACKOFF_MAX_SEC,
+    );
     if (waitMs > 0) nextAttemptAtMs.set(channelId, now + waitMs);
-    log('websub 구독 요청 실패', {
-      channelId,
-      reason: r.reason,
-      retryAfterSec: Math.round(waitMs / 1_000),
-    });
-    return false;
+    /**
+     * ★★ **로그도 셋으로 가른다.** 무응답을 "실패" 로만 찍으면 런북에서 `grep 실패` 로
+     *   진단하는 사람에게 **10분 창이 열렸다는 사실이 안 보인다** — "실패했다는데 왜
+     *   재시도를 안 하지" 가 된다. `delivery` 필드가 이미 붙어 있지만, 사람이 읽는
+     *   자리는 `msg` 다.
+     */
+    log(
+      mayHaveAccepted
+        ? 'websub 구독 요청 결과 미정 — 허브가 받았을 수 있어 검증을 기다립니다'
+        : r.delivery === 'no-answer'
+          ? 'websub 구독 요청 응답 없음 — 닿았을 수 있어 재요청 창을 엽니다'
+          : 'websub 구독 요청 실패',
+      {
+        channelId,
+        reason: r.reason,
+        delivery: r.delivery,
+        retryAfterSec: Math.round(waitMs / 1_000),
+      },
+    );
+    return mayHaveAccepted ? 'pending' : 'failed';
   }
 
   async function runSweep(): Promise<SweepOutcome> {
     const now = clock.now();
-    const out: SweepOutcome = { checked: 0, renewed: 0, renewFailed: 0, warnings: [], alerts: [] };
+    const out: SweepOutcome = {
+      checked: 0,
+      renewed: 0,
+      renewPending: 0,
+      renewFailed: 0,
+      skippedCooldown: 0,
+      warnings: [],
+      alerts: [],
+    };
 
     for (const channelId of known.keys()) {
       const row = ensureRow(channelId);
@@ -430,13 +627,26 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
         expiresAtMs - now <= row.leaseSeconds * 1_000 * (1 - LEASE_RENEW_AT_ELAPSED_RATIO);
       const cooledDown =
         subscribedAtMs === undefined || now - subscribedAtMs >= RESUBSCRIBE_COOLDOWN_MS;
-      // ★ 실패 백오프. `cooledDown`(성공 기준)과 다른 축이다 — 202 를 한 번도 못 받으면
-      //   `subscribed_at` 이 갱신되지 않아 쿨다운은 영원히 통과한다.
+      // ★ 실패 백오프. `cooledDown` 과 다른 축이다 — 확정 실패(4xx·network)에서는
+      //   `subscribed_at` 이 갱신되지 않아 쿨다운이 통과하므로 브레이크가 따로 있어야 한다.
+      //   (미정 쪽은 `attempt` 가 `markRequested` 를 걸어 쿨다운이 함께 잡는다.)
       const backedOff = now < (nextAttemptAtMs.get(channelId) ?? 0);
 
       if (dueForRenew && cooledDown && !backedOff) {
-        if (await attempt(channelId, out.alerts)) out.renewed += 1;
+        const res = await attempt(channelId, out.alerts);
+        if (res === 'renewed') out.renewed += 1;
+        else if (res === 'pending') out.renewPending += 1;
         else out.renewFailed += 1;
+      } else if (dueForRenew && !cooledDown) {
+        // ★ 백오프(`backedOff`)와 갈라 센다. 저쪽은 "우리가 쉬는 중" 이고 이쪽은
+        //   "앞선 요청의 결과를 기다리는 중" 이다 — 운영자에게 할 말이 다르다.
+        out.skippedCooldown += 1;
+        // ★ `!cooledDown` 이 `subscribedAtMs !== undefined` 를 함의하므로 타입이 좁혀진다
+        //   (`cooledDown` 의 첫 항이 `=== undefined` 다). `?? now` 를 붙이면 lint 가 잡는다.
+        const opensAtMs = subscribedAtMs + RESUBSCRIBE_COOLDOWN_MS;
+        if (out.skippedUntilMs === undefined || opensAtMs < out.skippedUntilMs) {
+          out.skippedUntilMs = opensAtMs;
+        }
       }
 
       // ── AC-P7 전반부: 잔여 비율 경보 ──────────────────────────────
@@ -580,12 +790,48 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
       subs.recordLease(input.channelId, leaseSeconds, expiresAt);
 
       if (leaseSeconds === undefined) {
-        // 리스를 모르는 구독은 만료를 계산할 수 없다. 스윕이 쿨다운 뒤 재구독한다.
+        /**
+         * 리스를 모르는 구독은 만료를 계산할 수 없다. 스윕이 쿨다운 뒤 재구독한다.
+         *
+         * ★★ **이 상태는 세 눈이 모두 감긴다.** `expires_at` 이 NULL 이라 리스 잔여
+         *   경보가 평가되지 않고(`runSweep` 의 게이트), 바로 위 `recordLease` 의 SQL 이
+         *   `last_renew_error` 를 **무조건 비우므로** 런북의 진단 질의에는 멀쩡한 행으로
+         *   보인다. 그래서 사유를 **다시 적는다** — 안 적으면 구독이 붙었는데 만료를
+         *   모르는 상태가 로그 한 줄 말고는 아무 데도 안 남는다 (§3-a 안 보내기).
+         *
+         * ★★ 실패 스트릭도 **풀지 않는다.** 이유는 "볼 눈이 없어서" 가 아니라
+         *   (위 `setRenewError` 가 그 눈을 만든다) **핑퐁을 막기 위해서**다:
+         *   허브가 5xx 를 주다 리스 없는 검증만 보내는 상태가 이어지면, 여기서 풀 때마다
+         *   스트릭이 1→0→1→0 으로 오가며 **임계 3에 영영 닿지 않는다.**
+         */
+        subs.setRenewError(
+          input.channelId,
+          '검증은 됐으나 lease_seconds 가 없어 만료를 모릅니다',
+          clock.date().toISOString(),
+        );
         log('websub 검증에 lease_seconds 가 없습니다 — 만료를 알 수 없습니다', {
           channelId: input.channelId,
           raw: input.leaseSecondsRaw ?? null,
         });
       } else {
+        /**
+         * ★★ **갱신 실패 episode 를 닫는 곳이 여기다.**
+         *
+         *   허브가 `503` 을 돌려주고도 뒤에서 구독을 처리하는 것이 관측된 이상
+         *   (2026-09-19), *"갱신이 성공했다"* 를 알려 주는 신호는 구독 POST 의 응답이
+         *   아니라 **이 검증 GET** 이다. `attempt()` 의 `observe(false)` 만으로는
+         *   그 경로가 닫히지 않는다 — 검증이 도착하면 `expires_at` 이 미래로 밀려
+         *   `dueForRenew` 가 2.5일간 거짓이 되고, 그동안 `attempt()` 자체가 불리지
+         *   않으므로 스트릭이 **1 인 채로 굳는다.**
+         *
+         *   그 상태로 다음 갱신 주기를 맞으면 셋이 연달아 틀어진다:
+         *     · `websub_renew_fail_streak` 지표가 멀쩡한 채널을 실패로 보고한다
+         *     · 성공한 갱신 3번이 쌓여 *"갱신 3회 연속 실패"* 경보가 뜬다 (틀리게 보내기)
+         *     · `stuck-watch` 가 `alerted` 를 세워 **진짜 장애 때 경보가 안 뜬다** (안 보내기)
+         */
+        stuck.observe('websub-renew', input.channelId, false, clock.now());
+        nextAttemptAtMs.delete(input.channelId);
+
         log('websub 구독이 검증됐습니다', {
           channelId: input.channelId,
           leaseSeconds,
