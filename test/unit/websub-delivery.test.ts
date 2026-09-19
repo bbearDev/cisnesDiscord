@@ -50,6 +50,7 @@ function failWith(kind: TextFailureKind, status?: number): TextClient & { calls:
 }
 
 function build(http: TextClient) {
+  const logs: { message: string; extra?: Record<string, unknown> }[] = [];
   const clock = new ManualClock(T0);
   const db = openDb({ path: ':memory:' });
   migrate(db);
@@ -71,11 +72,13 @@ function build(http: TextClient) {
       }),
     }),
     leaseWarnRatio: 0.2,
+    onLog: (message, extra) => logs.push({ message, ...(extra === undefined ? {} : { extra }) }),
   });
   return {
     clock,
     subs,
     websub,
+    logs,
     close: (): void => {
       db.close();
     },
@@ -115,6 +118,36 @@ describe('★★ 5xx — 허브가 받았을 수 있다', () => {
     expect(out.renewPending, '시도하지도 않고 미정으로 셌다').toBe(0);
     expect(out.renewFailed).toBe(0);
     expect(http.calls, '창 안인데 허브를 또 두드렸다').toBe(1);
+    h.close();
+  });
+
+  /**
+   * ★★ **남은 시간을 고정 10분으로 적으면 안 된다.** 창을 연 것이 운영자의 직전
+   *   클릭이 아니라 주기 스윕이면 `subscribed_at` 이 이미 몇 분 전이다. 그때
+   *   "10분쯤 뒤에" 라고 적으면 3분 뒤에 열릴 창을 10분 기다리게 한다.
+   */
+  it('★★ skippedUntilMs 가 창이 실제로 열리는 시각을 준다 (10분 고정이 아니다)', async () => {
+    const h = build(failWith('http', 503));
+    const openedAt = h.clock.now();
+    await h.websub.sweep(); // 창이 여기서 열린다
+
+    h.clock.advance(7 * 60_000); // 주기 스윕이 열어 둔 지 7분 뒤에 운영자가 누른다
+    const out = await h.websub.sweep();
+
+    expect(out.skippedCooldown).toBe(1);
+    expect(out.skippedUntilMs, '창이 닫히는 시각을 안 줬다').toBe(
+      openedAt + RESUBSCRIBE_COOLDOWN_MS,
+    );
+    // 남은 시간은 10분이 아니라 3분이다
+    expect((out.skippedUntilMs ?? 0) - h.clock.now()).toBe(3 * 60_000);
+    h.close();
+  });
+
+  it('★ 걸린 채널이 없으면 skippedUntilMs 가 없다', async () => {
+    const h = build(failWith('http', 503));
+    const out = await h.websub.sweep();
+    expect(out.skippedCooldown).toBe(0);
+    expect(out.skippedUntilMs).toBeUndefined();
     h.close();
   });
 
@@ -166,6 +199,33 @@ describe('★★ timeout — 닿았는지 모른다', () => {
     const out = await h.websub.sweep();
     expect(out.renewPending, '무응답을 "허브가 받았다" 로 셌다').toBe(0);
     expect(out.renewFailed).toBe(1);
+    h.close();
+  });
+
+  /**
+   * ★★ **로그에서도 셋이 갈려야 한다.** 무응답을 "실패" 로만 찍으면 런북에서
+   *   `grep 실패` 로 진단하는 사람에게 **10분 창이 열렸다는 사실이 안 보인다** —
+   *   "실패했다는데 왜 재시도를 안 하지" 가 된다.
+   */
+  it('★★ 로그가 "실패" 가 아니라 "응답 없음" 으로 찍힌다 — 창이 열린 걸 알려야 한다', async () => {
+    const h = build(failWith('timeout'));
+    await h.websub.sweep();
+
+    const line = h.logs.find((l) => l.message.startsWith('websub 구독 요청'));
+    expect(line?.message, '무응답을 "실패" 로만 찍어 창이 열린 사실이 묻혔다').not.toBe(
+      'websub 구독 요청 실패',
+    );
+    expect(line?.message).toContain('응답 없음');
+    expect(line?.message, '창이 열렸다는 사실이 로그에 없다').toContain('재요청 창');
+    expect(line?.extra?.['delivery']).toBe('no-answer');
+    h.close();
+  });
+
+  it('★ 확정 실패는 "실패" 로 찍힌다 — 셋이 같은 문구면 가른 뜻이 없다', async () => {
+    const h = build(failWith('network'));
+    await h.websub.sweep();
+    const line = h.logs.find((l) => l.message.startsWith('websub 구독 요청'));
+    expect(line?.message).toBe('websub 구독 요청 실패');
     h.close();
   });
 

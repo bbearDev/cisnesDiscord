@@ -213,7 +213,13 @@ export function hubDelivery(r: {
 }): HubDelivery {
   switch (r.kind) {
     case 'http':
-      return r.status !== undefined && r.status >= 500 ? 'may-be-accepted' : 'rejected';
+      // ★★ `>= 500` 이 아니라 **넷을 적는다.** 관측은 503 하나이고, 그 논리가 번지는
+      //   범위는 "요청을 받고 나서 난 오류"(500·502·503·504)까지다. `501 Not Implemented`
+      //   와 `505 HTTP Version Not Supported` 는 5xx 지만 **4xx 와 같은 확정 거절**이라,
+      //   여기에 30분 상한과 "기다리면 붙는다" 를 물리면 4xx 를 뺀 이유가 그대로 되돌아온다.
+      return r.status === 500 || r.status === 502 || r.status === 503 || r.status === 504
+        ? 'may-be-accepted'
+        : 'rejected';
     case 'timeout':
       return 'no-answer';
     case 'budget':
@@ -344,6 +350,17 @@ export interface SweepOutcome {
    *   아무것도 안 하고 있다고 읽는다.
    */
   skippedCooldown: number;
+  /**
+   * 창에 걸린 채널 중 **가장 먼저 열리는** 시각(epoch ms). 걸린 게 없으면 `undefined`.
+   *
+   * ★ 창을 연 것이 운영자의 직전 클릭이 아니라 **주기 스윕**일 수 있다. 그때
+   *   `subscribed_at` 은 이미 몇 분 전이라 남은 시간이 10분보다 짧다 — 고정 문구로
+   *   "10분쯤 뒤에" 라고 적으면 3분 뒤에 열릴 창을 10분 기다리게 한다.
+   *
+   * ★ 남은 초가 아니라 **절대 시각**이다. 스윕이 끝나고 문구를 만들기까지의 지연에
+   *   값이 흔들리지 않는다.
+   */
+  skippedUntilMs?: number | undefined;
   warnings: LeaseWarning[];
   /** `stuck-watch` 가 이번 스윕에서 발화한 것 (AC-P7 후반부) */
   alerts: StuckAlert[];
@@ -560,10 +577,18 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
       mayHaveAccepted ? WEBSUB_PENDING_BACKOFF_MAX_SEC : WEBSUB_BACKOFF_MAX_SEC,
     );
     if (waitMs > 0) nextAttemptAtMs.set(channelId, now + waitMs);
+    /**
+     * ★★ **로그도 셋으로 가른다.** 무응답을 "실패" 로만 찍으면 런북에서 `grep 실패` 로
+     *   진단하는 사람에게 **10분 창이 열렸다는 사실이 안 보인다** — "실패했다는데 왜
+     *   재시도를 안 하지" 가 된다. `delivery` 필드가 이미 붙어 있지만, 사람이 읽는
+     *   자리는 `msg` 다.
+     */
     log(
       mayHaveAccepted
         ? 'websub 구독 요청 결과 미정 — 허브가 받았을 수 있어 검증을 기다립니다'
-        : 'websub 구독 요청 실패',
+        : r.delivery === 'no-answer'
+          ? 'websub 구독 요청 응답 없음 — 닿았을 수 있어 재요청 창을 엽니다'
+          : 'websub 구독 요청 실패',
       {
         channelId,
         reason: r.reason,
@@ -614,8 +639,14 @@ export function createWebSubClient(opts: WebSubClientOptions): WebSubClient {
         else out.renewFailed += 1;
       } else if (dueForRenew && !cooledDown) {
         // ★ 백오프(`backedOff`)와 갈라 센다. 저쪽은 "우리가 쉬는 중" 이고 이쪽은
-        //   "허브의 답을 기다리는 중" 이다 — 운영자에게 할 말이 다르다.
+        //   "앞선 요청의 결과를 기다리는 중" 이다 — 운영자에게 할 말이 다르다.
         out.skippedCooldown += 1;
+        // ★ `!cooledDown` 이 `subscribedAtMs !== undefined` 를 함의하므로 타입이 좁혀진다
+        //   (`cooledDown` 의 첫 항이 `=== undefined` 다). `?? now` 를 붙이면 lint 가 잡는다.
+        const opensAtMs = subscribedAtMs + RESUBSCRIBE_COOLDOWN_MS;
+        if (out.skippedUntilMs === undefined || opensAtMs < out.skippedUntilMs) {
+          out.skippedUntilMs = opensAtMs;
+        }
       }
 
       // ── AC-P7 전반부: 잔여 비율 경보 ──────────────────────────────

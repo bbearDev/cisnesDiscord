@@ -184,11 +184,23 @@ describe('★★ 구독 재시도 백오프 — 재시도가 막힘을 유지시
  *   응답은 초 단위까지 같았고 결과만 갈렸다. 허브는 확률적으로 처리한다.
  */
 describe('★★ hubDelivery — 503 을 실패로 단정하지 않는다', () => {
-  it('5xx 만 may-be-accepted 다 — 허브가 받아서 뒤에서 처리 중일 수 있다', () => {
-    expect(hubDelivery({ kind: 'http', status: 503 })).toBe('may-be-accepted');
+  it('요청을 받고 나서 난 오류(500·502·503·504)만 may-be-accepted 다', () => {
+    expect(hubDelivery({ kind: 'http', status: 503 })).toBe('may-be-accepted'); // 관측된 것
     expect(hubDelivery({ kind: 'http', status: 500 })).toBe('may-be-accepted');
     expect(hubDelivery({ kind: 'http', status: 502 })).toBe('may-be-accepted');
-    expect(hubDelivery({ kind: 'http', status: 599 })).toBe('may-be-accepted');
+    expect(hubDelivery({ kind: 'http', status: 504 })).toBe('may-be-accepted');
+  });
+
+  /**
+   * ★★ `>= 500` 으로 뭉뚱그리면 이 둘까지 미정이 된다. 5xx 지만 **4xx 와 같은 확정
+   *   거절**이라, 30분 상한과 "기다리면 붙는다" 를 물리면 4xx 를 미정에서 뺀 이유
+   *   ("설정이 틀려서 영영 안 붙는 상태를 10분 창 뒤에 숨긴다")가 그대로 되돌아온다.
+   */
+  it('★★ 501·505·511 은 5xx 라도 거절이다 — 재시도해도 같은 답이다', () => {
+    expect(hubDelivery({ kind: 'http', status: 501 })).toBe('rejected'); // Not Implemented
+    expect(hubDelivery({ kind: 'http', status: 505 })).toBe('rejected'); // HTTP Version Not Supported
+    expect(hubDelivery({ kind: 'http', status: 511 })).toBe('rejected'); // Network Auth Required
+    expect(hubDelivery({ kind: 'http', status: 599 })).toBe('rejected');
   });
 
   it('★★ 4xx 는 거절이다 — 거절된 요청까지 기다리면 영영 안 붙는 상태를 숨긴다', () => {

@@ -240,7 +240,48 @@ describe('응답 문구', () => {
     expect(r.content, '확인 건수를 빠뜨렸다 — 멀쩡한 채널까지 막힌 것처럼 읽힌다').toContain(
       '확인 2건',
     );
-    expect(r.content, '언제까지인지 안 적으면 60초마다 누른다').toContain('10분');
+    expect(r.content, '언제까지인지 안 적으면 60초마다 누른다').toContain('최대 10분');
+  });
+
+  /**
+   * ★★ 창을 연 것이 **주기 스윕**이면 남은 시간은 10분보다 짧다. 고정 문구로
+   *   "10분쯤 뒤에" 라고 적으면 3분 뒤 열릴 창을 10분 기다리게 한다.
+   */
+  it('★★ 남은 시간을 실제 값으로 적는다 — 10분 고정이 아니다', async () => {
+    const clockAt = Date.parse('2026-09-18T10:00:00.000Z');
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 1,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 1,
+          skippedUntilMs: clockAt + 3 * 60_000, // 3분 뒤에 열린다
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content, '남은 시간을 실제로 안 적었다').toContain('약 3분');
+    expect(r.content, '3분 남았는데 10분을 기다리게 했다').not.toContain('최대 10분');
+  });
+
+  it('★ 이미 지난 시각이면 "0분" 이 아니라 최소 1분으로 적는다', async () => {
+    const clockAt = Date.parse('2026-09-18T10:00:00.000Z');
+    const { cmd } = make({
+      renewNow: () =>
+        Promise.resolve({
+          checked: 1,
+          renewed: 0,
+          renewPending: 0,
+          renewFailed: 0,
+          skippedCooldown: 1,
+          skippedUntilMs: clockAt - 5_000,
+        }),
+    });
+    const r = await cmd.execute(OPERATOR);
+    // "0분 뒤" 는 지금 되는 것처럼 읽힌다
+    expect(r.content).toContain('약 1분');
+    expect(r.content).not.toContain('약 0분');
   });
 
   /**
@@ -263,8 +304,9 @@ describe('응답 문구', () => {
     expect(r.content, '무응답일 수도 있는데 검증을 기다린다고 단정했다').not.toContain(
       '검증을 기다리는 중',
     );
-    // "닿았을 수 있어" 처럼 조건부로 적는 것은 괜찮다 — 단정만 아니면 된다.
-    expect(r.content).toContain('닿았을 수 있어');
+    // ★ 조건부로 적는 것은 괜찮다 — 단정만 아니면 된다. "처리 중일 수 있어" 는
+    //   202(확실히 닿음)·5xx·무응답 셋 모두에 맞는 말이다.
+    expect(r.content).toContain('처리 중일 수 있어');
   });
 
   it('★ 시도가 있어도 창에 걸린 채널이 있으면 그 사실이 사라지지 않는다', async () => {

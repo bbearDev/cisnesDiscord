@@ -66,8 +66,10 @@ export interface WebSubRenewPort {
     /** 허브가 받았을 수도 있어 결과를 모르는 시도 — "실패" 와 다른 말이다 */
     renewPending: number;
     renewFailed: number;
-    /** 갱신할 때는 됐지만 **앞선 요청의 검증을 기다리느라** 시도하지 않은 채널 수 */
+    /** 갱신할 때는 됐지만 **앞선 요청 뒤 재요청 창**에 걸려 시도하지 않은 채널 수 */
     skippedCooldown: number;
+    /** 그 창 중 가장 먼저 열리는 시각(epoch ms) — 남은 시간을 정확히 적기 위해 */
+    skippedUntilMs?: number | undefined;
   }>;
   /** 채널별 리스 잔여 0..1 */
   leaseRatios(): { channelId: string; ratio: number }[];
@@ -182,9 +184,22 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
          *   *"기다리는 중"* 이라 하게 된다 — 61초 사이에 서로 어긋나는 두 문장이다.
          *   창이 열렸다는 **사실만** 적고 무엇이 올지는 약속하지 않는다.
          */
+        /**
+         * 창이 열리기까지 남은 분. 올림이되 최소 1 — "0분 뒤" 는 지금 되는 것처럼 읽힌다.
+         *
+         * ★ 10분 고정으로 적으면 안 된다. 창을 연 것이 운영자의 직전 클릭이 아니라
+         *   **주기 스윕**이면 `subscribed_at` 이 이미 몇 분 전이라, 3분 뒤 열릴 창을
+         *   10분 기다리게 한다.
+         */
+        const waitMin =
+          out.skippedUntilMs === undefined
+            ? undefined
+            : Math.max(1, Math.ceil((out.skippedUntilMs - now) / 60_000));
+        const waitPhrase = waitMin === undefined ? '최대 10분' : `약 ${String(waitMin)}분`;
+
         const head =
           attempted === 0 && out.skippedCooldown > 0
-            ? `앞선 요청 뒤 **재요청 창(10분) 안**입니다 — ${String(out.skippedCooldown)}건 / 확인 ${String(out.checked)}건`
+            ? `앞선 요청 뒤 **재요청 창** 안입니다 — ${String(out.skippedCooldown)}건 / 확인 ${String(out.checked)}건 (${waitPhrase} 남음)`
             : attempted === 0
               ? `지금은 갱신할 구독이 없습니다 — 확인 ${String(out.checked)}건 (잔여가 50% 를 넘습니다)`
               : out.renewFailed === 0 && out.renewPending === 0
@@ -205,8 +220,10 @@ export function createWebSubRenewCommand(deps: WebSubRenewCommandDeps): SlashCom
             ? []
             : [
                 '',
-                `앞선 요청이 허브에 닿았을 수 있어 **10분간 재요청을 막습니다** (${String(out.skippedCooldown)}건).`,
-                '그 사이 검증이 도착하면 저절로 완료됩니다 — 10분쯤 뒤에 다시 눌러 확인해 주십시오.',
+                // ★ "닿았을 수 있어" 라고만 쓰면 202(확실히 닿음)에서 약한 표현이 된다.
+                //   셋(202·5xx·무응답) 모두에 맞는 말은 "처리 중일 수 있어" 다.
+                `앞선 요청을 허브가 처리 중일 수 있어 **재요청을 막습니다** (${String(out.skippedCooldown)}건).`,
+                `그 사이 검증이 도착하면 저절로 완료됩니다 — ${waitPhrase} 뒤에 다시 눌러 확인해 주십시오.`,
               ];
 
         const pendingTail =
