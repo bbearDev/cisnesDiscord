@@ -258,16 +258,24 @@ describe('★★ 종류별 디바운스 재정의 — 유효기간이 긴 경보
   });
 
   it(`★★ websub_lease 는 ${String(DEBOUNCE_INTERVAL_OVERRIDE_MIN.websub_lease ?? 0)}분 창을 쓴다`, async () => {
-    // 리스 잔여 경보는 임계 아래 구간(리스 5일 × 20% ≈ 하루) 내내 참이라,
-    // 30분이면 하루 48번 오는데 첫 한 번 이후로는 새로 알려 주는 것이 없다.
+    // 리스 잔여 경보는 임계 아래 내내 참이고, **만료된 뒤에는 영영 0%** 라 끝나지도
+    // 않는다. 기본 30분이면 하루 48번 오는데 첫 한 번 이후로는 새로 알려 줄 것이 없다.
+    //
+    // ★ 시간 전진을 **상수에서 끌어온다.** 6시간을 손으로 적어 두었더니 값을 24시간으로
+    //   올릴 때 이 테스트만 깨졌다 — 그러면 테스트가 계약이 아니라 그때의 숫자를 지킨다.
+    const windowMs = (DEBOUNCE_INTERVAL_OVERRIDE_MIN.websub_lease ?? 0) * 60_000;
     const { svc, clock } = make({ notifier: recordingNotifier(), minIntervalMin: 30 });
     expect(await svc.raise('websub_lease', 'a')).toBe('sent');
 
-    clock.advance(60 * 60_000); // 1시간 — 기본 창이었다면 벌써 다시 나갔다
+    clock.advance(60 * 60_000); // 1시간 — 기본 창(30분)이었다면 벌써 다시 나갔다
     expect(await svc.raise('websub_lease', 'a'), '재정의가 먹지 않았다').toBe('suppressed');
 
-    clock.advance(5 * 60 * 60_000 + 60_000); // 누적 6시간 초과
+    clock.advance(windowMs); // 창을 확실히 넘긴다
     expect(await svc.raise('websub_lease', 'a')).toBe('sent');
+  });
+
+  it('★ 재정의 창은 기본 창보다 확실히 길다 — 짧으면 재정의의 뜻이 뒤집힌다', () => {
+    expect(DEBOUNCE_INTERVAL_OVERRIDE_MIN.websub_lease ?? 0).toBeGreaterThan(30);
   });
 
   it('★★ 디바운스를 끄면(minIntervalMin=0) 재정의도 함께 꺼진다', async () => {
@@ -281,7 +289,7 @@ describe('★★ 종류별 디바운스 재정의 — 유효기간이 긴 경보
     const { svc, clock } = make({ notifier: recordingNotifier(), minIntervalMin: 30 });
     await svc.raise('websub_lease', 'a');
     clock.advance(31 * 60_000);
-    expect(await svc.raise('websub_lease', 'a')).toBe('suppressed'); // 6시간 창
+    expect(await svc.raise('websub_lease', 'a')).toBe('suppressed'); // 재정의된 긴 창
     expect(await svc.raise('rss_fail', 'b')).toBe('sent'); // 30분 창 — 영향 없음
   });
 });
