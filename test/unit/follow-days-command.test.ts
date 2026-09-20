@@ -155,6 +155,24 @@ describe('판정별 답', () => {
     expect(r.content).not.toContain('일째');
   });
 
+  it('★ 시간대 없는 followedAt 은 시작일 미상으로 답한다 — 서버 시간대로 읽어 하루 어긋나느니 모른다고 한다', async () => {
+    const { cmd } = make({
+      lookup: { verdict: 'yes', cachedAt: CACHED_AT, snapshotAgeSec: 300, followedAt: '2026-09-11 16:20:46' },
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('시작일은 확인하지 못했습니다');
+    expect(r.content).not.toContain('일째');
+  });
+
+  it('±HH:MM 오프셋도 시간대다 — KST 표기 원문이면 그대로 센다', async () => {
+    const { cmd } = make({
+      lookup: { verdict: 'yes', cachedAt: CACHED_AT, snapshotAgeSec: 300, followedAt: '2026-09-11T16:20:46+09:00' },
+    });
+    const r = await cmd.execute(OPERATOR);
+    expect(r.content).toContain('**11일째**');
+    expect(r.content).toContain('2026-09-11 16:20 KST');
+  });
+
   it('no → 팔로워로 확인되지 않았다', async () => {
     const { cmd } = make({ lookup: { verdict: 'no', cachedAt: CACHED_AT, snapshotAgeSec: 300 } });
     const r = await cmd.execute(OPERATOR);
@@ -208,28 +226,24 @@ describe('★ followDays — KST 날짜 경계, 오늘이 1일째 (상류 `!팔�
   const KST_MIDNIGHT = Date.parse('2026-09-20T15:00:00.000Z');
 
   it('오늘 팔로우했으면 1 이다 — 0일이 아니다', () => {
-    expect(followDays('2026-09-21T02:59:00.000Z', NOW)).toBe(1);
+    expect(followDays(Date.parse('2026-09-21T02:59:00.000Z'), NOW)).toBe(1);
   });
 
   it('★ 경계는 KST 자정이다 — UTC 로 세면 하루가 어긋난다', () => {
     // 팔로우 23:59:59 KST(전날) · 지금 00:00:00 KST → 2일째
-    expect(followDays(new Date(KST_MIDNIGHT - 1_000).toISOString(), KST_MIDNIGHT)).toBe(2);
+    expect(followDays(KST_MIDNIGHT - 1_000, KST_MIDNIGHT)).toBe(2);
     // 팔로우 00:00:00 KST · 지금 같은 날 → 1일째
-    expect(followDays(new Date(KST_MIDNIGHT).toISOString(), KST_MIDNIGHT)).toBe(1);
+    expect(followDays(KST_MIDNIGHT, KST_MIDNIGHT)).toBe(1);
     // 같은 두 시각을 UTC 날짜로 보면 둘 다 09-20 이라 하루 차이가 안 난다 — 그 함정을 피했다
     expect(new Date(KST_MIDNIGHT - 1_000).toISOString().slice(0, 10)).toBe('2026-09-20');
     expect(new Date(KST_MIDNIGHT).toISOString().slice(0, 10)).toBe('2026-09-20');
   });
 
   it('열흘 전이면 11 이다', () => {
-    expect(followDays('2026-09-11T07:20:46.000Z', NOW)).toBe(11);
+    expect(followDays(Date.parse('2026-09-11T07:20:46.000Z'), NOW)).toBe(11);
   });
 
   it('미래 시각(시계 어긋남)은 1 로 접는다 — 음수를 답하지 않는다', () => {
-    expect(followDays('2026-12-01T00:00:00.000Z', NOW)).toBe(1);
-  });
-
-  it('못 읽는 값은 undefined 다', () => {
-    expect(followDays('언제더라', NOW)).toBeUndefined();
+    expect(followDays(Date.parse('2026-12-01T00:00:00.000Z'), NOW)).toBe(1);
   });
 });

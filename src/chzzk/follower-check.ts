@@ -50,6 +50,24 @@ export const RECHECK_EPSILON_MS = 30_000;
 export type FollowerVerdict = 'yes' | 'no' | 'unknown';
 
 /**
+ * **시간대가 명시된**(`Z` · `±HH:MM`) ISO-8601 만 epoch ms 로. 아니면 `undefined`.
+ *
+ * ★★ `Date.parse` 는 시간대 없는 문자열(`"2026-08-27 16:20:46"` — 하필 상류 DB
+ *   `created_date` 원문 형식)도 받는데, 그때는 **서버 시간대**로 읽는다. 상류가 어느 날
+ *   변환을 빠뜨리고 원문을 내보내면 UTC 서버에서 9시간이 밀려 KST 00~09시 팔로우가
+ *   하루 적게 나오고, `followDays` 도 `formatKst` 도 정상 숫자를 내므로 **아무 데서도
+ *   드러나지 않는다** — §3-a 가 제일 나쁘다고 정한 "틀리게 보내기" 다. 시간대가 적힌
+ *   값만 받아, 상류가 틀리면 "시작일 미상" 으로 **보이게** 한다.
+ *
+ * ★ 판정기(`followedAt` 을 싣는 자리)와 `/팔로우`(일수를 세는 자리)가 같은 파서를 쓴다.
+ */
+export function parseZonedIso(text: string): number | undefined {
+  if (!/(?:Z|[+-]\d{2}:?\d{2})$/.test(text)) return undefined;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
  * `follower_lookup_unknown_total{reason}` 의 라벨 (§9.4).
  *
  * ★ **목록을 늘리지 않는다.** `stale` 은 §13 `scopes-이상` 이 *"스코프 상실·동기화
@@ -346,10 +364,11 @@ export function createFollowerChecker(opts: FollowerCheckerOptions): FollowerChe
 
     // ── 판정표 3 ───────────────────────────────────────────────
     if (body.isFollower) {
-      // ★ 시작 시각은 `yes` 에만 싣고, 파싱되는 값만 싣는다. 못 읽는 원문을 그대로
-      //   넘기면 명령이 "NaN일째" 를 적는다. 없어도 판정은 `yes` 그대로다.
+      // ★ 시작 시각은 `yes` 에만 싣고, **시간대가 명시된** 값만 싣는다 (`parseZonedIso`).
+      //   못 읽는 원문을 그대로 넘기면 명령이 "NaN일째" 를 적고, 시간대 없는 원문은
+      //   조용히 하루 어긋난다. 없어도 판정은 `yes` 그대로다.
       const followedAt =
-        typeof body.followedAt === 'string' && Number.isFinite(Date.parse(body.followedAt))
+        typeof body.followedAt === 'string' && parseZonedIso(body.followedAt) !== undefined
           ? body.followedAt
           : undefined;
       return finish({ verdict: 'yes', ...snapshot, ...(followedAt === undefined ? {} : { followedAt }) });

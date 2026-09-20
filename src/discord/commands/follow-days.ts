@@ -1,6 +1,6 @@
 import { PermissionFlagsBits } from 'discord.js';
 
-import type { FollowerChecker, FollowerLookup } from '../../chzzk/follower-check.js';
+import { parseZonedIso, type FollowerChecker, type FollowerLookup } from '../../chzzk/follower-check.js';
 import type { Clock } from '../../runtime/clock.js';
 import type { LinkRepo } from '../../store/repos/link-repo.js';
 import { formatKst, snapshotLine, unknownReasonDetail } from '../messages.js';
@@ -62,7 +62,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const KST_OFFSET_MIN = 9 * 60;
 
 /**
- * 팔로우 시작 시각부터 오늘까지의 **일수** — 오늘 팔로우했으면 1.
+ * 팔로우 시작 시각(epoch ms)부터 오늘까지의 **일수** — 오늘 팔로우했으면 1.
  *
  * ★ 밀리초 차이를 나누지 않고 **KST 날짜 경계**로 센다. 나누면 오늘 팔로우한
  *   사람이 "0일" 이 되는데 사람은 그걸 "1일째" 로 읽는다. 상류 `!팔로우` 의
@@ -70,11 +70,9 @@ const KST_OFFSET_MIN = 9 * 60;
  *
  * ★ 미래 시각(시계 어긋남)은 1 로 접는다 — 음수 일수를 답하면 안 된다.
  */
-export function followDays(followedAtIso: string, now: number): number | undefined {
-  const at = Date.parse(followedAtIso);
-  if (!Number.isFinite(at)) return undefined;
+export function followDays(followedAtMs: number, now: number): number {
   const dayOf = (ms: number): number => Math.floor((ms + KST_OFFSET_MIN * 60_000) / DAY_MS);
-  const days = dayOf(now) - dayOf(at);
+  const days = dayOf(now) - dayOf(followedAtMs);
   return days < 0 ? 1 : days + 1;
 }
 
@@ -82,15 +80,15 @@ export function followDays(followedAtIso: string, now: number): number | undefin
 function verdictLine(lookup: FollowerLookup, now: number): string {
   switch (lookup.verdict) {
     case 'yes': {
-      if (lookup.followedAt === undefined) {
+      // ★ 판정기가 시간대 있는 값만 싣지만(`parseZonedIso`), `FollowerLookup` 은 누구나
+      //   만들 수 있는 타입이라 여기서 같은 파서로 한 번 더 읽는다 — "시작일 미상" 갈래는
+      //   이 하나뿐이다.
+      const at = lookup.followedAt === undefined ? undefined : parseZonedIso(lookup.followedAt);
+      if (at === undefined) {
         // 팔로우 중인 것은 사실이다. 그것만 적고 모르는 것은 모른다고 한다.
         return '· 팔로우: **팔로우 중** — 시작일은 확인하지 못했습니다 (상류가 일자를 주지 않았습니다)';
       }
-      const days = followDays(lookup.followedAt, now);
-      const since = formatKst(Date.parse(lookup.followedAt));
-      return days === undefined
-        ? `· 팔로우: **팔로우 중** — 시작일은 확인하지 못했습니다`
-        : `· 팔로우: **${String(days)}일째** (${since} 부터)`;
+      return `· 팔로우: **${String(followDays(at, now))}일째** (${formatKst(at)} 부터)`;
     }
     case 'no':
       return '· 팔로우: 팔로워로 확인되지 않았습니다';

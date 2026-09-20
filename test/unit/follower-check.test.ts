@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { UPSTREAM_FOLLOWER_CACHE_MIN } from '../../src/config/schema.js';
 import {
   createFollowerChecker,
+  parseZonedIso,
   RECHECK_EPSILON_MS,
   type FollowerLookup,
 } from '../../src/chzzk/follower-check.js';
@@ -440,6 +441,25 @@ describe('★ followedAt — 팔로우 시작 시각은 yes 에만 실리고, �
     expect(r.followedAt).toBeUndefined();
   });
 
+  it('★★ 시간대 없는 원문("2026-08-27 16:20:46" — 상류 DB 형식)은 싣지 않는다 — 서버 시간대로 읽혀 하루 어긋난다', async () => {
+    const now = CACHED_FRESH + 60_000;
+    for (const naive of ['2026-08-27 16:20:46', '2026-08-27T16:20:46', '2026-08-27']) {
+      const h = harness({ now, fetchImpl: jsonFetch(200, { ...yes, followedAt: naive }) });
+      const r = await h.checker.check(VIEWER, now, {});
+      // ★ `Date.parse` 는 이 값들을 받아들인다 — 유한성만 보면 통과하고, 그 뒤엔 아무 데서도 안 보인다
+      expect(Number.isFinite(Date.parse(naive)), naive).toBe(true);
+      expect(r.verdict).toBe('yes');
+      expect(r.followedAt, naive).toBeUndefined();
+    }
+  });
+
+  it('±HH:MM 오프셋은 시간대다 — 싣는다', async () => {
+    const now = CACHED_FRESH + 60_000;
+    const h = harness({ now, fetchImpl: jsonFetch(200, { ...yes, followedAt: '2026-08-27T16:20:46+09:00' }) });
+    const r = await h.checker.check(VIEWER, now, {});
+    expect(r.followedAt).toBe('2026-08-27T16:20:46+09:00');
+  });
+
   it('★ stale 이면 isFollower 처럼 followedAt 도 보지 않는다 — 신선도 게이트가 먼저다', async () => {
     const now = Date.parse('2026-09-06T19:00:00.000Z');
     const stale = loadJsonFixture('chzzkbot/followers/stale-but-follower.json') as Record<string, unknown>;
@@ -479,5 +499,26 @@ describe('★ inspect — 운영자 조회는 같은 질문 한 번이지만 재
     const r = await h.checker.inspect(VIEWER);
     expect(r.verdict).toBe('unknown');
     expect(r.reason).toBe('http-5xx');
+  });
+});
+
+describe('★ parseZonedIso — 시간대가 적힌 값만 읽는다', () => {
+  it('Z · +09:00 · +0900 · -05:00 을 같은 순간으로 읽는다', () => {
+    const utc = Date.UTC(2026, 7, 27, 7, 20, 46);
+    expect(parseZonedIso('2026-08-27T07:20:46.000Z')).toBe(utc);
+    expect(parseZonedIso('2026-08-27T16:20:46+09:00')).toBe(utc);
+    expect(parseZonedIso('2026-08-27T16:20:46+0900')).toBe(utc);
+    expect(parseZonedIso('2026-08-27T02:20:46-05:00')).toBe(utc);
+  });
+
+  it('시간대 없는 값은 Date.parse 가 받더라도 undefined 다', () => {
+    expect(parseZonedIso('2026-08-27 16:20:46')).toBeUndefined();
+    expect(parseZonedIso('2026-08-27T16:20:46')).toBeUndefined();
+    expect(parseZonedIso('2026-08-27')).toBeUndefined();
+  });
+
+  it('시간대 꼴이어도 날짜가 아니면 undefined 다', () => {
+    expect(parseZonedIso('언제더라Z')).toBeUndefined();
+    expect(parseZonedIso('+09:00')).toBeUndefined();
   });
 });
