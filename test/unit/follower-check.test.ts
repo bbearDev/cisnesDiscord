@@ -409,3 +409,75 @@ describe('요청 모양 · 지표', () => {
     expect(alerts).toHaveLength(0);
   });
 });
+
+describe('★ followedAt — 팔로우 시작 시각은 yes 에만 실리고, 판정을 바꾸지 않는다', () => {
+  const yes = loadJsonFixture('chzzkbot/followers/yes.json') as Record<string, unknown>;
+
+  it('yes 이면 상류의 followedAt 을 그대로 싣는다', async () => {
+    const now = CACHED_FRESH + 60_000;
+    const h = harness({ now, fetchImpl: jsonFetch(200, yes) });
+    const r = await h.checker.check(VIEWER, now, {});
+    expect(r.verdict).toBe('yes');
+    expect(r.followedAt).toBe('2026-08-27T07:20:46.000Z');
+  });
+
+  it('옛 판 상류(키 없음)·null 이어도 yes 는 yes 다 — 게이트가 상류 배포 순서에 묶이지 않는다', async () => {
+    const now = CACHED_FRESH + 60_000;
+    const { followedAt: _omit, ...withoutKey } = yes;
+    for (const body of [withoutKey, { ...yes, followedAt: null }]) {
+      const h = harness({ now, fetchImpl: jsonFetch(200, body) });
+      const r = await h.checker.check(VIEWER, now, {});
+      expect(r.verdict).toBe('yes');
+      expect(r.followedAt).toBeUndefined();
+    }
+  });
+
+  it('못 읽는 원문은 싣지 않는다 — 명령이 "NaN일째" 를 적지 않게', async () => {
+    const now = CACHED_FRESH + 60_000;
+    const h = harness({ now, fetchImpl: jsonFetch(200, { ...yes, followedAt: '언제더라' }) });
+    const r = await h.checker.check(VIEWER, now, {});
+    expect(r.verdict).toBe('yes');
+    expect(r.followedAt).toBeUndefined();
+  });
+
+  it('★ stale 이면 isFollower 처럼 followedAt 도 보지 않는다 — 신선도 게이트가 먼저다', async () => {
+    const now = Date.parse('2026-09-06T19:00:00.000Z');
+    const stale = loadJsonFixture('chzzkbot/followers/stale-but-follower.json') as Record<string, unknown>;
+    const h = harness({ now, fetchImpl: jsonFetch(200, { ...stale, followedAt: '2026-08-27T07:20:46.000Z' }) });
+    const r = await h.checker.check(VIEWER, now, {});
+    expect(r.verdict).toBe('unknown');
+    expect(r.followedAt).toBeUndefined();
+  });
+});
+
+describe('★ inspect — 운영자 조회는 같은 질문 한 번이지만 재조회를 예약하지 않는다', () => {
+  it('no 여도 recheckAt 이 없다 — 인증이 아니라 "클릭을 못 봤다" 는 비교가 성립하지 않는다', async () => {
+    const now = CACHED_FRESH + 60_000;
+    const h = harness({ now, fetchImpl: jsonFetch(200, loadJsonFixture('chzzkbot/followers/no.json')) });
+    const r = await h.checker.inspect(VIEWER);
+    expect(r.verdict).toBe('no');
+    expect(r.recheckAt).toBeUndefined();
+    // 예약 대상이 아니므로 예약도 되지 않는다
+    expect(h.checker.scheduleRecheck(VIEWER, r, () => undefined)).toBe(false);
+  });
+
+  it('yes 이면 followedAt 을 싣고, 단건 경로 한 번을 부르며 lookups 에 센다', async () => {
+    const now = CACHED_FRESH + 60_000;
+    const h = harness({ now, fetchImpl: jsonFetch(200, loadJsonFixture('chzzkbot/followers/yes.json')) });
+    const r = await h.checker.inspect(VIEWER);
+    expect(r.verdict).toBe('yes');
+    expect(r.followedAt).toBe('2026-08-27T07:20:46.000Z');
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.url).toBe(`http://127.0.0.1:8080/api/followers/${OUR_CHANNEL}/${VIEWER}`);
+    // ★ 상류를 한 번 두드린 것은 사실이다 — follower_lookup_total 은 그것을 센다
+    expect(h.checker.metrics.lookups).toBe(1);
+  });
+
+  it('전송 실패는 check 와 같이 unknown 으로 접히고 던지지 않는다', async () => {
+    const now = CACHED_FRESH;
+    const h = harness({ now, fetchImpl: jsonFetch(503, { error: 'down' }) });
+    const r = await h.checker.inspect(VIEWER);
+    expect(r.verdict).toBe('unknown');
+    expect(r.reason).toBe('http-5xx');
+  });
+});

@@ -89,6 +89,15 @@ export interface FollowerLookup {
    *   추측이 아니라 **시각 비교로 참**이 된다.
    */
   recheckAt?: number;
+  /**
+   * 팔로우 시작 시각 — 상류가 준 ISO-8601 원문. **`yes` 일 때만** 실린다.
+   *
+   * ★ 판정에는 쓰지 않는다. `/팔로우` 가 "며칠째" 를 세는 데만 쓴다.
+   *   상류(chzzkbot)가 이 필드를 싣기 전 판이거나 치지직이 일자를 안 줬으면 없다 —
+   *   그때 명령은 "팔로우 중, 시작일 미상" 으로 답한다. 없다고 `unknown` 으로
+   *   접으면 게이트가 상류 배포 순서에 묶인다.
+   */
+  followedAt?: string;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -111,6 +120,11 @@ const FollowerBody = z.object({
   cachedAt: z.unknown(),
   /** R3-b — 상류 사유. 진단에만 쓰고 판정에는 쓰지 않는다 */
   lastError: z.string().nullable().optional(),
+  /**
+   * 팔로우 시작 시각(ISO). **선택이다** — 옛 판 상류는 이 키가 없고, 팔로워가
+   * 아니거나 일자를 모르면 `null` 이다. 어느 쪽도 판정을 바꾸지 않는다.
+   */
+  followedAt: z.string().nullable().optional(),
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -118,7 +132,14 @@ const FollowerBody = z.object({
 // ══════════════════════════════════════════════════════════════════
 
 export interface FollowerMetrics {
-  /** `follower_lookup_total` — **인증 수와 1:1 이어야 한다** */
+  /**
+   * `follower_lookup_total` — 상류 단건 조회 횟수.
+   *
+   * ★ 인증 1건당 1회 + AD-2 재조회 + 운영자의 `/팔로우`(`inspect`) 다.
+   *   뒤의 둘은 드물어 **인증 수와 거의 1:1** 이고, 그 비율이 크게 벗어나면
+   *   R1(단건)이 깨진 것이다. 운영자 조회를 따로 세지 않는 이유: "상류를 몇 번
+   *   두드렸나" 가 이 지표의 뜻이고, 운영자 조회도 그 한 번이다.
+   */
   readonly lookups: number;
   /** `follower_lookup_recheck_total` — **인증당 최대 1** */
   readonly rechecks: number;
@@ -177,6 +198,13 @@ export interface FollowerChecker {
    * @param clickAt `/인증` 을 누른 시각. 판정표 4 의 시각 비교 기준이다
    */
   check(viewerChannelId: string, clickAt: number, opts?: CheckOptions): Promise<FollowerLookup>;
+  /**
+   * 운영자 조회(`/팔로우`) — `check` 와 같은 한 번의 질문이지만 **재조회를
+   * 예약하지 않는다.** 그래서 `recheckAt` 이 실리지 않는다. 인증이 아니므로
+   * "이 스냅샷이 그 사람의 클릭을 못 봤다" 는 비교 자체가 성립하지 않는다.
+   * **절대 던지지 않는다.**
+   */
+  inspect(viewerChannelId: string): Promise<FollowerLookup>;
   /**
    * AD-2 — `no` 판정 1회 자동 재조회를 예약한다.
    *
@@ -317,7 +345,15 @@ export function createFollowerChecker(opts: FollowerCheckerOptions): FollowerChe
     }
 
     // ── 판정표 3 ───────────────────────────────────────────────
-    if (body.isFollower) return finish({ verdict: 'yes', ...snapshot });
+    if (body.isFollower) {
+      // ★ 시작 시각은 `yes` 에만 싣고, 파싱되는 값만 싣는다. 못 읽는 원문을 그대로
+      //   넘기면 명령이 "NaN일째" 를 적는다. 없어도 판정은 `yes` 그대로다.
+      const followedAt =
+        typeof body.followedAt === 'string' && Number.isFinite(Date.parse(body.followedAt))
+          ? body.followedAt
+          : undefined;
+      return finish({ verdict: 'yes', ...snapshot, ...(followedAt === undefined ? {} : { followedAt }) });
+    }
 
     // ── 판정표 4 — AD-2 예약 대상 ──────────────────────────────
     // ★ 게이트를 통과한(= 충분히 신선한) `no` 만 여기 온다. 그 구간에서만
@@ -344,6 +380,12 @@ export function createFollowerChecker(opts: FollowerCheckerOptions): FollowerChe
 
     check(viewerChannelId, clickAt, o = {}): Promise<FollowerLookup> {
       return lookup(viewerChannelId, clickAt, true, o);
+    },
+
+    inspect(viewerChannelId): Promise<FollowerLookup> {
+      // ★ `allowRecheck: false` — 재조회가 만든 판정과 같은 모양이다. `clickAt` 은
+      //   그 분기에서만 읽히므로 지금 시각을 넘겨도 아무것도 바뀌지 않는다.
+      return lookup(viewerChannelId, opts.clock.now(), false, {});
     },
 
     scheduleRecheck(viewerChannelId, result, onResult): boolean {

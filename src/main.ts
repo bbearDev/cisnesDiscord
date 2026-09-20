@@ -25,6 +25,7 @@ import {
   createGateChannelCommand,
   GATE_CHANNEL_OPTION_NAME,
 } from './discord/commands/gate-channel.js';
+import { createFollowDaysCommand } from './discord/commands/follow-days.js';
 import { createLinkCommand } from './discord/commands/link.js';
 import { createAuthGuard, type AuthGuard } from './discord/commands/guard.js';
 import { createStatusCommand } from './discord/commands/status.js';
@@ -218,7 +219,7 @@ export const LOCK_ERROR_EXIT_CODE = DB_ERROR_EXIT_CODE;
 
 export const DEFAULT_CONFIG_PATH = 'config/config.yaml';
 
-/** `/연동해제` · `/연동상태` 의 대상 옵션 이름 (`commands/*.ts` 의 정의와 같은 값) */
+/** `/연동해제` · `/연동상태` · `/팔로우` 의 대상 옵션 이름 (`commands/*.ts` 의 정의와 같은 값) */
 export const TARGET_OPTION_NAME = '대상';
 
 /**
@@ -1289,7 +1290,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
   const statusCommand = createStatusCommand({ links });
 
   /**
-   * ★ 슬래시로 **등록되는** 것은 운영자용 셋뿐이다. `인증` 은 여기 없다 —
+   * ★ 슬래시로 **등록되는** 것은 운영자용뿐이다. `인증` 은 여기 없다 —
    *   `PUT applicationGuildCommands` 가 전체 교체라, 목록에서 빠지면 다음 기동에
    *   디스코드에서도 사라진다.
    */
@@ -1297,6 +1298,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
   for (const command of [
     createUnlinkCommand({ links, clock, onLog: commandLog }),
     statusCommand,
+    createFollowDaysCommand({ links, followers, clock, onLog: commandLog }),
     createGateChannelCommand({
       config: {
         gateChannelId: (guildId) => guildConfig.get(guildId)?.gateChannelId,
