@@ -4,7 +4,9 @@ import {
   BLACKLIST_COMMAND,
   BLACKLIST_COMMAND_NAME,
   BLACKLIST_EMBED_MAX,
+  BLACKLIST_REASON_MAX_LENGTH,
   BLACKLIST_REASON_OPTION_NAME,
+  EMBED_DESCRIPTION_MAX,
   blacklistEmbed,
   createBlacklistCommand,
 } from '../../src/discord/commands/blacklist.js';
@@ -12,7 +14,7 @@ import { OPTION_TYPE_STRING, OPTION_TYPE_SUB_COMMAND, OPTION_TYPE_USER } from '.
 import { DiscordSendError } from '../../src/discord/client.js';
 import { ManualClock } from '../../src/runtime/clock.js';
 import type { BlacklistEntry, BlacklistRepo } from '../../src/store/repos/blacklist-repo.js';
-import type { AccountLink, LinkRepo } from '../../src/store/repos/link-repo.js';
+import type { AccountLink } from '../../src/store/repos/link-repo.js';
 
 /**
  * `/블랙리스트` (운영자 전용) — 조각 단위. 이음매(버튼·콜백·재조회가 실제로 막히는가)는
@@ -24,6 +26,8 @@ import type { AccountLink, LinkRepo } from '../../src/store/repos/link-repo.js';
  *   ③ 회수 REST 는 시그널로 끊긴다 — "응답 없음" 을 만들지 않는다
  *   ④ 모르는 하위 명령은 조용히 첫 갈래로 가지 않는다
  *   ⑤ 어떤 경우에도 던지지 않는다
+ *   ⑥ 목록 임베드 설명은 어떤 입력에도 4096자를 넘지 않는다 — 넘으면 디스코드가 400 을 내고
+ *      운영자는 목록을 아예 못 본다
  */
 
 const NOW = Date.parse('2026-09-22T03:00:00.000Z');
@@ -37,36 +41,30 @@ const LINK: AccountLink = {
   linkedAt: '2026-09-20T00:00:00.000Z',
 };
 
-function fakeLinks(rows: AccountLink[]): LinkRepo & { unlinked: string[] } {
-  const unlinked: string[] = [];
-  return {
-    unlinked,
-    get: (guildId, userId) => rows.find((r) => r.guildId === guildId && r.discordUserId === userId),
-    link: () => {
-      throw new Error('not used');
-    },
-    getByChannel: () => undefined,
-    unlink: (guildId, userId) => {
-      const i = rows.findIndex((r) => r.guildId === guildId && r.discordUserId === userId);
-      if (i < 0) return undefined;
-      unlinked.push(userId);
-      return rows.splice(i, 1)[0];
-    },
-    opsEvents: () => [],
-    count: () => rows.length,
-  };
-}
-
-function fakeBlacklist(seed: BlacklistEntry[] = []): BlacklistRepo & { rows: BlacklistEntry[] } {
+/** 저장소 가짜 — `add` 가 연동 행을 복사·삭제하는 계약까지 흉내 낸다 (`blacklist-repo.ts` 머리말 ★★) */
+function fakeBlacklist(
+  seed: BlacklistEntry[] = [],
+  links: AccountLink[] = [],
+): BlacklistRepo & { rows: BlacklistEntry[]; unlinked: string[] } {
   const rows = [...seed];
+  const unlinked: string[] = [];
   const find = (g: string, u: string) => rows.find((r) => r.guildId === g && r.discordUserId === u);
   return {
     rows,
+    unlinked,
     add: (input) => {
       const existing = find(input.guildId, input.discordUserId);
       if (existing !== undefined) return { ok: false, reason: 'already-blacklisted', existing };
-      rows.push({ ...input });
-      return { ok: true, entry: { ...input } };
+      const i = links.findIndex((l) => l.guildId === input.guildId && l.discordUserId === input.discordUserId);
+      const link = i < 0 ? undefined : links.splice(i, 1)[0];
+      if (link !== undefined) unlinked.push(link.discordUserId);
+      const entry: BlacklistEntry = {
+        ...input,
+        chzzkChannelId: link?.chzzkChannelId,
+        chzzkChannelName: link?.chzzkChannelName,
+      };
+      rows.push(entry);
+      return { ok: true, entry, unlinked: link };
     },
     remove: (g, u) => {
       const i = rows.findIndex((r) => r.guildId === g && r.discordUserId === u);
@@ -79,22 +77,23 @@ function fakeBlacklist(seed: BlacklistEntry[] = []): BlacklistRepo & { rows: Bla
   };
 }
 
-type RevokeMode = 'ok' | 'forbidden' | 'hang';
+type RevokeMode = 'ok' | 'forbidden' | 'gone' | 'hang';
 
 function make(opts: { links?: AccountLink[]; seed?: BlacklistEntry[]; revoke?: RevokeMode; roleId?: string | undefined } = {}) {
   const clock = new ManualClock(NOW);
-  const links = fakeLinks(opts.links ?? [{ ...LINK }]);
-  const blacklist = fakeBlacklist(opts.seed);
+  const blacklist = fakeBlacklist(opts.seed, opts.links ?? [{ ...LINK }]);
   const revoked: string[] = [];
   const logs: { message: string; extra?: Record<string, unknown> }[] = [];
   const mode = opts.revoke ?? 'ok';
   const cmd = createBlacklistCommand({
     blacklist,
-    links,
     gateway: {
       removeRole: (g, u, r, o) => {
         if (mode === 'forbidden') {
           return Promise.reject(new DiscordSendError('forbidden', 'Missing Permissions', 403));
+        }
+        if (mode === 'gone') {
+          return Promise.reject(new DiscordSendError('unknown', 'Unknown Member', 404));
         }
         if (mode === 'hang') {
           return new Promise<void>((_, reject) => {
@@ -114,7 +113,7 @@ function make(opts: { links?: AccountLink[]; seed?: BlacklistEntry[]; revoke?: R
       logs.push(extra === undefined ? { message } : { message, extra });
     },
   });
-  return { cmd, clock, links, blacklist, revoked, logs };
+  return { cmd, clock, blacklist, revoked, logs };
 }
 
 describe('정의', () => {
@@ -160,7 +159,7 @@ describe('① 권한', () => {
       expect(r.content).toContain('운영자만');
     }
     expect(h.blacklist.rows).toHaveLength(0);
-    expect(h.links.unlinked).toHaveLength(0);
+    expect(h.blacklist.unlinked).toHaveLength(0);
     expect(h.revoked).toHaveLength(0);
   });
 });
@@ -186,7 +185,7 @@ describe('추가', () => {
         addedAt: '2026-09-22T03:00:00.000Z',
       },
     ]);
-    expect(h.links.unlinked).toEqual(['u1']);
+    expect(h.blacklist.unlinked).toEqual(['u1']);
     expect(h.revoked).toEqual(['g1:u1:role-1']);
   });
 
@@ -208,7 +207,7 @@ describe('추가', () => {
     expect(r.content).toContain('권한이 없습니다');
     expect(r.content).toContain('직접 제거');
     expect(h.blacklist.rows).toHaveLength(1);
-    expect(h.links.unlinked).toEqual(['u1']);
+    expect(h.blacklist.unlinked).toEqual(['u1']);
     expect(h.logs.some((l) => l.message === '블랙리스트 역할 회수 실패' && l.extra?.['kind'] === 'forbidden')).toBe(true);
   });
 
@@ -219,6 +218,15 @@ describe('추가', () => {
     expect(r.content).toContain('회수하지 못했습니다');
     expect(h.blacklist.rows).toHaveLength(1);
     expect(h.logs.some((l) => l.message === '블랙리스트 역할 회수 실패' && l.extra?.['kind'] === 'timeout')).toBe(true);
+  });
+
+  it('대상이 서버를 떠났으면(404) 실패가 아니라 "뗄 역할이 없다" 다 — 차단은 끝나 있다', async () => {
+    const h = make({ revoke: 'gone' });
+    const r = await h.cmd.execute({ ...OP, subcommand: '추가', targetUserId: 'u1' });
+    expect(r.content).toContain('서버에 없는 멤버');
+    expect(r.content).not.toContain('직접 제거');
+    expect(h.blacklist.rows).toHaveLength(1);
+    expect(h.logs.some((l) => l.message === '블랙리스트 역할 회수 실패')).toBe(false);
   });
 
   it('인증 역할이 설정돼 있지 않으면 REST 를 부르지 않고 그 사실을 말한다', async () => {
@@ -238,7 +246,7 @@ describe('추가', () => {
     expect(r.content).toContain('이미 블랙리스트에 있습니다');
     expect(r.content).toContain('2026-09-01 09:00 KST');
     expect(h.blacklist.rows[0]?.reason).toBeUndefined();
-    expect(h.links.unlinked).toHaveLength(0);
+    expect(h.blacklist.unlinked).toHaveLength(0);
     expect(h.revoked).toHaveLength(0);
   });
 
@@ -313,7 +321,7 @@ describe('목록', () => {
     expect(e?.footer).toBeUndefined();
   });
 
-  it('상한을 넘으면 최근 순으로 자르고 푸터에 남은 수를 적는다', () => {
+  it('인원 상한을 넘으면 최근 순으로 자르고 푸터에 남은 수를 적는다', () => {
     const entries: BlacklistEntry[] = Array.from({ length: BLACKLIST_EMBED_MAX + 3 }, (_, i) => ({
       guildId: 'g1',
       discordUserId: `u${String(i)}`,
@@ -324,8 +332,27 @@ describe('목록', () => {
     expect(e.title).toContain(`${String(BLACKLIST_EMBED_MAX + 3)}명`);
     expect(e.description?.split('\n').filter((l) => l.startsWith('**')).length).toBe(BLACKLIST_EMBED_MAX);
     expect(e.footer?.text).toContain('외 3명');
-    // 디스코드 임베드 설명 상한
-    expect(e.description?.length ?? 0).toBeLessThanOrEqual(4096);
+  });
+
+  it('★★ ⑥ 글자 예산 — 사유 100자 · 긴 채널명 · 18자리 id 로 상한 인원을 채워도 4096자를 넘지 않는다', () => {
+    const entries: BlacklistEntry[] = Array.from({ length: BLACKLIST_EMBED_MAX + 5 }, (_, i) => ({
+      guildId: 'g1',
+      discordUserId: `1${String(i).padStart(17, '0')}`,
+      chzzkChannelName: '가'.repeat(30),
+      reason: '나'.repeat(BLACKLIST_REASON_MAX_LENGTH),
+      addedBy: '200000000000000000',
+      addedAt: '2026-09-01T00:00:00.000Z',
+    }));
+    const e = blacklistEmbed(entries);
+    const shown = e.description?.split('\n').filter((l) => l.startsWith('**')).length ?? 0;
+
+    expect(e.description?.length ?? 0).toBeLessThanOrEqual(EMBED_DESCRIPTION_MAX);
+    // 글자 예산이 인원 상한보다 먼저 걸렸다 — 그래도 몇 명이 안 보이는지는 정확히 말한다
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(BLACKLIST_EMBED_MAX);
+    expect(e.footer?.text).toContain(`외 ${String(entries.length - shown)}명`);
+    // 잘린 자리에 반 토막 줄이 없다 — 마지막 줄도 "└ 등록:" 으로 끝난다
+    expect(e.description?.split('\n').at(-1)).toMatch(/^└ 등록: /);
   });
 });
 

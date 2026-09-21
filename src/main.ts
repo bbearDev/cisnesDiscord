@@ -1307,7 +1307,6 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     createFollowDaysCommand({ links, followers, clock, onLog: commandLog }),
     createBlacklistCommand({
       blacklist,
-      links,
       gateway,
       resolveVerifiedRoleId: (guildId) => guildConfig.get(guildId)?.verifiedRoleId,
       clock,

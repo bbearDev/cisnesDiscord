@@ -297,7 +297,6 @@ function makeEnv(): Env {
   const statusCmd = createStatusCommand({ links });
   const blacklistCmd = createBlacklistCommand({
     blacklist,
-    links,
     gateway,
     resolveVerifiedRoleId: () => ROLE,
     clock,
