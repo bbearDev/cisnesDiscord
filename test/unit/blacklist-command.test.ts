@@ -189,6 +189,13 @@ describe('추가', () => {
     expect(h.revoked).toEqual(['g1:u1:role-1']);
   });
 
+  it('사유는 서버에서도 상한으로 자른다 — 화면의 max_length 는 우회될 수 있다', async () => {
+    const h = make();
+    const r = await h.cmd.execute({ ...OP, subcommand: '추가', targetUserId: 'u1', reason: '가'.repeat(BLACKLIST_REASON_MAX_LENGTH + 1) });
+    expect(r.content).toContain('블랙리스트에 추가했습니다');
+    expect(h.blacklist.rows[0]?.reason).toBe('가'.repeat(BLACKLIST_REASON_MAX_LENGTH));
+  });
+
   it('연동이 없던 사람 — 디스코드 계정만 차단되고 그 사실을 말한다', async () => {
     const h = make({ links: [] });
     const r = await h.cmd.execute({ ...OP, subcommand: '추가', targetUserId: 'u9' });

@@ -49,7 +49,10 @@ export const BLACKLIST_SUB_REMOVE = '해제';
 export const BLACKLIST_SUB_LIST = '목록';
 /** `/블랙리스트 추가` 의 사유 옵션 이름 — 조립부(`interactions.ts`)가 이 이름으로 뽑는다 */
 export const BLACKLIST_REASON_OPTION_NAME = '사유';
-/** 사유 상한 — 디스코드가 입력 UI 에서 막는다 */
+/**
+ * 사유 상한. `max_length` 는 디스코드 **화면**이 지키는 것이라 서버에서도 자른다 — 이 값이
+ * 목록 임베드 글자 예산("첫 줄부터 넘는 일은 없다")의 전제이므로 전제가 우리 쪽에 있어야 한다.
+ */
 export const BLACKLIST_REASON_MAX_LENGTH = 100;
 /**
  * 목록 임베드에 싣는 최대 인원. 넘치면 최근 순으로 자르고 푸터에 남은 수를 적는다.
@@ -243,7 +246,7 @@ export function createBlacklistCommand(deps: BlacklistCommandDeps): SlashCommand
       return { ephemeral: true, content: '자기 자신은 차단할 수 없습니다.' };
     }
     const at = deps.clock.date().toISOString();
-    const reason = ctx.reason?.trim();
+    const reason = ctx.reason?.trim().slice(0, BLACKLIST_REASON_MAX_LENGTH);
 
     // ① 차단 행 + 연동 행 삭제 — 한 트랜잭션. 치지직 채널은 저장소가 연동 행에서 복사한다.
     const added = deps.blacklist.add({
