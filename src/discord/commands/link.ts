@@ -1,10 +1,12 @@
 import { ButtonStyle, ComponentType } from 'discord.js';
 
 import type { Clock } from '../../runtime/clock.js';
+import type { BlacklistRepo } from '../../store/repos/blacklist-repo.js';
 import type { LinkRepo } from '../../store/repos/link-repo.js';
 import { applyGate, type GateGateway } from '../gate.js';
 import {
   alreadyLinkedMessage,
+  blacklistedMessage,
   busyMessage,
   cooldownMessage,
   gateFailedMessage,
@@ -23,6 +25,7 @@ import type { Command, CommandContext, CommandReply } from './types.js';
  *
  * ★ **판정 순서가 곧 AC-12 다. 이 순서를 바꾸지 않는다.**
  *
+ *   0. 차단됨           → 안내만. 아무것도 만들지 않는다             (`/블랙리스트`)
  *   1. 이미 연동됨      → 안내만. state 를 새로 만들지 않는다        (AC-12 a)
  *                         ★ 단, **역할이 없으면 역할만 다시 붙인다** (아래)
  *   2. 진행 중인 state  → **같은 링크를 재제시**한다                  (AC-12 b)
@@ -32,6 +35,11 @@ import type { Command, CommandContext, CommandReply } from './types.js';
  *   2번이 3번보다 **위**인 것이 요점이다. 아래로 내리면 링크를 받고 브라우저를
  *   여는 사이에 다시 누른 사람이 **쿨다운 오류를 보고 방금 받은 링크도 잃는다** —
  *   그때 그 사람이 할 수 있는 일이 30초 기다리기밖에 없어진다.
+ *
+ *   0번은 여기서 디스코드 계정으로만 본다 — 버튼 시점에는 치지직 채널을 모른다. 치지직
+ *   채널까지 보는 본체는 **콜백**이고(`web/routes/oauth-callback.ts`), 여기는 차단된
+ *   사람이 링크를 받고 치지직까지 갔다 오는 헛걸음과 상류 호출을 줄이는 자리다.
+ *   차단 전에 받은 링크로 늦게 돌아오는 경우도 콜백이 막으므로 여기가 뚫려도 안전하다.
  *
  * ★★ **1번의 "역할만 다시 붙인다"** — 콜백의 `grant()` 는 연동 행을 역할 부여 **전에** 쓴다.
  *   그래서 봇 역할이 대상 역할보다 아래여서 403 이 나면 *연동됨 + 역할 없음* 상태가 남는데,
@@ -80,9 +88,13 @@ export interface LinkSessionPort {
   pendingCount(): number;
 }
 
+/** 차단 목록 중 이 명령이 쓰는 만큼 — 디스코드 계정으로만 묻는다 (머리말 0번) */
+export type LinkBlacklistPort = Pick<BlacklistRepo, 'findBlocking'>;
+
 export interface LinkCommandDeps {
   sessions: LinkSessionPort;
   links: LinkRepo;
+  blacklist: LinkBlacklistPort;
   guard: AuthGuard;
   clock: Clock;
   /** `web.publicBaseUrl`. 프록시가 종단하는 공개 https 주소 */
@@ -201,6 +213,13 @@ export function createLinkCommand(deps: LinkCommandDeps): Command {
 
     async execute(ctx: CommandContext): Promise<CommandReply> {
       const now = deps.clock.now();
+
+      // ── 0. 차단됨 — 무엇도 만들지 않는다 ────────────────────────
+      const blocked = deps.blacklist.findBlocking(ctx.guildId, ctx.userId);
+      if (blocked !== undefined) {
+        log('차단된 계정의 인증 시도', { guildId: ctx.guildId, userId: ctx.userId });
+        return { ephemeral: true, content: blacklistedMessage() };
+      }
 
       // ── 1. 이미 연동됨 (AC-12 a) ────────────────────────────────
       const existing = deps.links.get(ctx.guildId, ctx.userId);

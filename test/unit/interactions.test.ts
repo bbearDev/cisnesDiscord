@@ -30,6 +30,8 @@ function fakeInteraction(shape: {
   commandName?: string;
   user?: string | null;
   channel?: string | null;
+  subcommand?: string | null;
+  reason?: string | null;
 }): FakeInteraction {
   const reply = vi.fn().mockResolvedValue(undefined);
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -49,6 +51,16 @@ function fakeInteraction(shape: {
       getUser: () => (shape.user === undefined || shape.user === null ? null : { id: shape.user }),
       getChannel: () =>
         shape.channel === undefined || shape.channel === null ? null : { id: shape.channel },
+      // ★ discord.js 는 `getSubcommand(true)` 를 하위 명령 없는 명령에서 부르면 던진다 —
+      //   라우터가 `false` 로 부르는지는 이 가짜가 그 계약을 흉내 내야 잡힌다.
+      getSubcommand: (required: boolean) => {
+        if (shape.subcommand === undefined || shape.subcommand === null) {
+          if (required) throw new Error('No subcommand specified for interaction.');
+          return null;
+        }
+        return shape.subcommand;
+      },
+      getString: () => (shape.reason === undefined || shape.reason === null ? null : shape.reason),
     },
     reply,
     deferReply,
@@ -91,6 +103,7 @@ function harness(replies: { command?: CommandReply; button?: CommandReply } = {}
     },
     targetUserOption: '대상',
     targetChannelOption: '채널',
+    reasonOption: '사유',
   });
   return { route, commandCalls, buttonCalls };
 }
@@ -177,6 +190,40 @@ describe('슬래시', () => {
     expect(f.reply).toHaveBeenCalledTimes(1);
     expect(f.reply).toHaveBeenCalledWith({ content: 'cmd:연동해제', flags: MessageFlags.Ephemeral });
     expect(f.deferReply).not.toHaveBeenCalled();
+  });
+
+  it('하위 명령·사유 옵션도 컨텍스트로 접힌다 (`/블랙리스트 추가 대상 사유`)', async () => {
+    const h = harness();
+    const f = fakeInteraction({
+      kind: 'slash',
+      commandName: '연동해제',
+      operator: true,
+      user: 'target-9',
+      subcommand: '추가',
+      reason: '도배',
+    });
+    await h.route(f.interaction);
+    expect(h.commandCalls[0]?.ctx).toMatchObject({
+      targetUserId: 'target-9',
+      subcommand: '추가',
+      reason: '도배',
+    });
+  });
+
+  it('하위 명령이 없는 명령에서는 subcommand · reason 이 비어 있고 던지지 않는다', async () => {
+    const h = harness();
+    const f = fakeInteraction({ kind: 'slash', commandName: '연동해제', operator: true, user: 'u' });
+    await h.route(f.interaction);
+    expect(h.commandCalls[0]?.ctx).toMatchObject({ subcommand: undefined, reason: undefined });
+    expect(f.reply).toHaveBeenCalledTimes(1);
+  });
+
+  it('임베드가 있으면 답장에 그대로 싣는다 (`/블랙리스트 목록`)', async () => {
+    const embed = { title: '블랙리스트 — 1명', description: '<@u>' };
+    const h = harness({ command: { ephemeral: true, content: '', embeds: [embed] } });
+    const f = fakeInteraction({ kind: 'slash', commandName: '연동해제', operator: true });
+    await h.route(f.interaction);
+    expect(f.reply).toHaveBeenCalledWith({ content: '', embeds: [embed], flags: MessageFlags.Ephemeral });
   });
 
   it('★★ defer 명령은 deferReply(ephemeral) → editReply 한 쌍이고 reply 는 부르지 않는다', async () => {

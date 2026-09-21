@@ -7,6 +7,7 @@ import {
 import { applyGate, type GateGateway, type GateOutcome } from '../../discord/gate.js';
 import {
   badStateMessage,
+  blacklistedMessage,
   duplicateChannelMessage,
   exchangeFailedMessage,
   gateFailedMessage,
@@ -16,6 +17,7 @@ import {
 } from '../../discord/messages.js';
 import { AUTH_PANEL_LINK_LABEL } from '../../discord/panel.js';
 import type { Clock } from '../../runtime/clock.js';
+import type { BlacklistRepo } from '../../store/repos/blacklist-repo.js';
 import type { LinkRepo } from '../../store/repos/link-repo.js';
 import type { Route, RouteRequest, RouteResponse } from '../server.js';
 import type { ConsumedSession, VerificationResult, VerificationSessionStore } from '../session.js';
@@ -38,6 +40,12 @@ import type { ConsumedSession, VerificationResult, VerificationSessionStore } fr
  *
  * ★ 왕복 예산 10초 (§5.6.1). 교환 + `users/me` + 팔로워 조회 3회가 이 예산을 나눠 쓴다.
  *   초과는 **실패가 아니라 `unknown`** 이다 — §3-a.
+ *
+ * ★★ **차단 목록(`/블랙리스트`)의 본체는 여기다.** 신원(`users/me`)을 안 직후, 팔로워 조회
+ *   **앞**에서 디스코드 계정과 치지직 채널 둘 다로 묻는다 — 새 디스코드 계정으로 같은 치지직
+ *   계정을 다시 붙이는 우회를 막는 자리이고, 차단된 사람 때문에 상류를 두드리지 않는 자리다.
+ *   `grant()` 안에서 한 번 더 본다: AD-2 재조회는 콜백에서 최대 10분 뒤에 돌아오므로 그
+ *   사이에 차단된 사람이 재조회로 연동되면 안 된다.
  *
  * ★ 응답은 최소 HTML 이다. 서버 공통 CSP 가 `default-src 'none'` 이라 스크립트도
  *   스타일시트도 없다 — 그래서 실수로 무언가를 얹어도 브라우저가 막는다.
@@ -83,6 +91,8 @@ export interface OAuthCallbackDeps {
   viewerToken: ViewerTokenClient;
   followers: FollowerChecker;
   links: LinkRepo;
+  /** 차단 목록. 디스코드 계정·치지직 채널 둘 다로 묻는다 (머리말 ★★) */
+  blacklist: Pick<BlacklistRepo, 'findBlocking'>;
   gateway: GateGateway;
   clock: Clock;
   /**
@@ -272,17 +282,36 @@ export function createOAuthCallbackRoute(deps: OAuthCallbackDeps): Route {
     }
   }
 
+  /** 차단됐는가 — 디스코드 계정 또는 치지직 채널. 걸리면 기록하고 `true` */
+  function isBlacklisted(session: ConsumedSession, identity: ViewerIdentity, guild: GuildTarget): boolean {
+    const blocked = deps.blacklist.findBlocking(guild.guildId, session.discordUserId, identity.channelId);
+    if (blocked === undefined) return false;
+    log('차단된 계정의 인증 거부', {
+      guildId: guild.guildId,
+      discordUserId: session.discordUserId,
+      chzzkChannelId: identity.channelId,
+      // 어느 키로 걸렸는지 — 우회 시도(다른 디스코드 계정)를 로그에서 구분한다
+      matchedBy: blocked.discordUserId === session.discordUserId ? 'discord-user' : 'chzzk-channel',
+    });
+    return true;
+  }
+
   /**
    * 팔로워 `yes` 이후 — 연동 + 게이트.
    *
    * ★ AD-2 재조회도 **같은 함수**를 지난다. 두 벌로 쓰면 재조회 경로에서만
-   *   중복 연동 검사(AC-7)를 빠뜨리는 사고가 난다.
+   *   중복 연동 검사(AC-7)·차단 검사를 빠뜨리는 사고가 난다.
    */
   async function grant(
     session: ConsumedSession,
     identity: ViewerIdentity,
     guild: GuildTarget,
   ): Promise<{ result: VerificationResult; message: string; gate?: GateOutcome }> {
+    // ★ 콜백 본문이 이미 봤어도 다시 본다 — 재조회 경로는 최대 10분 뒤다 (머리말 ★★).
+    if (isBlacklisted(session, identity, guild)) {
+      return { result: 'blacklisted', message: blacklistedMessage() };
+    }
+
     const outcome = deps.links.link({
       discordUserId: session.discordUserId,
       guildId: guild.guildId,
@@ -387,6 +416,12 @@ export function createOAuthCallbackRoute(deps: OAuthCallbackDeps): Route {
     }
     const identity = identified.identity;
 
+    // ── ①-b 차단 목록 — 팔로워 조회 **앞** (머리말 ★★) ─────────
+    if (isBlacklisted(session, identity, guild)) {
+      settle(session.state, 'blacklisted');
+      return page(403, '인증이 차단돼 있습니다', blacklistedMessage(), clearCookie);
+    }
+
     // ── ② 팔로워 판정 (상류 단건 조회 1회) ──────────────────────
     const lookup = await deps.followers.check(identity.channelId, session.clickedAt, {
       deadlineAt,
@@ -428,10 +463,19 @@ export function createOAuthCallbackRoute(deps: OAuthCallbackDeps): Route {
     // ── ④ yes — 연동 + 게이트 ──────────────────────────────────
     const granted = await grant(session, identity, guild);
     settle(session.state, granted.result, lookup);
-    const status = granted.result === 'linked' || granted.result === 'already-linked' ? 200 : 409;
+    const status =
+      granted.result === 'linked' || granted.result === 'already-linked'
+        ? 200
+        : granted.result === 'blacklisted'
+          ? 403
+          : 409;
     return page(
       status,
-      granted.result === 'duplicate-channel' ? '이미 연동된 계정입니다' : '인증 결과',
+      granted.result === 'duplicate-channel'
+        ? '이미 연동된 계정입니다'
+        : granted.result === 'blacklisted'
+          ? '인증이 차단돼 있습니다'
+          : '인증 결과',
       granted.message,
       clearCookie,
     );

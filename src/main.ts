@@ -25,6 +25,7 @@ import {
   createGateChannelCommand,
   GATE_CHANNEL_OPTION_NAME,
 } from './discord/commands/gate-channel.js';
+import { BLACKLIST_REASON_OPTION_NAME, createBlacklistCommand } from './discord/commands/blacklist.js';
 import { createFollowDaysCommand } from './discord/commands/follow-days.js';
 import { createLinkCommand } from './discord/commands/link.js';
 import { createAuthGuard, type AuthGuard } from './discord/commands/guard.js';
@@ -120,6 +121,7 @@ import {
   createGuildConfigRepo,
   type GuildConfigRepo,
 } from './store/repos/guild-config-repo.js';
+import { createBlacklistRepo, type BlacklistRepo } from './store/repos/blacklist-repo.js';
 import { createLinkRepo, type LinkRepo } from './store/repos/link-repo.js';
 import {
   createLiveSessionRepo,
@@ -219,7 +221,7 @@ export const LOCK_ERROR_EXIT_CODE = DB_ERROR_EXIT_CODE;
 
 export const DEFAULT_CONFIG_PATH = 'config/config.yaml';
 
-/** `/연동해제` · `/연동상태` · `/팔로우` 의 대상 옵션 이름 (`commands/*.ts` 의 정의와 같은 값) */
+/** `/연동해제` · `/연동상태` · `/팔로우` · `/블랙리스트` 의 대상 옵션 이름 (`commands/*.ts` 의 정의와 같은 값) */
 export const TARGET_OPTION_NAME = '대상';
 
 /**
@@ -405,6 +407,7 @@ export interface App {
 
   readonly ledger: AnnouncementLedgerRepo;
   readonly links: LinkRepo;
+  readonly blacklist: BlacklistRepo;
   readonly liveSessions: LiveSessionRepo;
   readonly ops: OpsEventRepo;
   readonly runtimeState: RuntimeStateRepo;
@@ -629,6 +632,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
   // ── 저장소 ────────────────────────────────────────────────────
   const ledger = createAnnouncementLedgerRepo(db, { metrics: ledgerMetrics });
   const links = createLinkRepo(db);
+  const blacklist = createBlacklistRepo(db);
   const liveSessions = createLiveSessionRepo(db);
   const runtimeState = createRuntimeStateRepo(db);
   const alertStateRepo = createAlertStateRepo(db);
@@ -1214,6 +1218,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       viewerToken,
       followers,
       links,
+      blacklist,
       gateway: gateGateway,
       clock,
       resolveGuild,
@@ -1280,6 +1285,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
   const linkCommand = createLinkCommand({
     sessions,
     links,
+    blacklist,
     guard: authGuard,
     clock,
     publicBaseUrl: file.web.publicBaseUrl,
@@ -1299,6 +1305,14 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     createUnlinkCommand({ links, clock, onLog: commandLog }),
     statusCommand,
     createFollowDaysCommand({ links, followers, clock, onLog: commandLog }),
+    createBlacklistCommand({
+      blacklist,
+      links,
+      gateway,
+      resolveVerifiedRoleId: (guildId) => guildConfig.get(guildId)?.verifiedRoleId,
+      clock,
+      onLog: commandLog,
+    }),
     createGateChannelCommand({
       config: {
         gateChannelId: (guildId) => guildConfig.get(guildId)?.gateChannelId,
@@ -1360,6 +1374,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       dispatchButton,
       targetUserOption: TARGET_OPTION_NAME,
       targetChannelOption: GATE_CHANNEL_OPTION_NAME,
+      reasonOption: BLACKLIST_REASON_OPTION_NAME,
     });
 
     client.on(Events.InteractionCreate, (interaction) => {
@@ -1636,6 +1651,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     liveness,
     ledger,
     links,
+    blacklist,
     liveSessions,
     ops,
     runtimeState,
