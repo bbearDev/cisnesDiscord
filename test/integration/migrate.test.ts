@@ -93,18 +93,31 @@ describe('openDb — 기동 게이트', () => {
 });
 
 describe('migrate — 멱등', () => {
-  it('★ 001_init 을 2회 연속 적용해도 스키마 덤프가 동일하다', () => {
+  it('★ 마이그레이션 전체를 2회 연속 적용해도 스키마 덤프가 동일하다', () => {
     const first = migrate(db);
     const dumpAfterFirst = schemaDump(db);
 
     const second = migrate(db);
     const dumpAfterSecond = schemaDump(db);
 
-    expect(first.applied).toEqual([1]);
+    expect(first.applied).toEqual([1, 2]);
     expect(second.applied).toEqual([]);
-    expect(second.skipped).toEqual([1]);
+    expect(second.skipped).toEqual([1, 2]);
     expect(dumpAfterSecond).toBe(dumpAfterFirst);
+    expect(currentVersion(db)).toBe(2);
+  });
+
+  it('★ 001 만 적용된 DB(기존 배포)에 다시 돌리면 002 만 붙는다', () => {
+    // 기존 배포의 모양 — 001 까지만 적용된 장부.
+    migrate(db);
+    db.prepare('DELETE FROM schema_migrations WHERE version > 1').run();
+    db.exec('DROP TABLE blacklist');
     expect(currentVersion(db)).toBe(1);
+
+    const result = migrate(db);
+    expect(result.applied).toEqual([2]);
+    expect(result.skipped).toEqual([1]);
+    expect(currentVersion(db)).toBe(2);
   });
 
   it('001_init.sql 에 PRAGMA · BEGIN 이 없다 (러너가 트랜잭션을 소유한다)', () => {

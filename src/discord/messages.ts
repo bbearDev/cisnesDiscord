@@ -194,6 +194,20 @@ export function roleRegrantedMessage(channelName: string, knownMissing: boolean)
   ].join('\n');
 }
 
+/**
+ * 차단된 사람이 인증을 시도했다 (`/블랙리스트`). 버튼과 콜백 페이지가 **같은 문안**을 쓴다.
+ *
+ * ★ 사유·등록자를 싣지 않는다. 그것은 운영자용(`/블랙리스트 목록`)이고, 당사자에게는
+ *   "차단됐다 · 운영진에게 문의" 이상을 말하지 않는다 — 문안이 운영 판단의 근거를
+ *   대신 설명하기 시작하면 운영자가 문안에 맞춰 사유를 적게 된다.
+ */
+export function blacklistedMessage(): string {
+  return [
+    '이 계정은 서버 운영진에 의해 인증이 **차단**돼 있습니다.',
+    '인증을 진행할 수 없습니다. 문의는 서버 운영진에게 해 주십시오.',
+  ].join('\n');
+}
+
 export function exchangeFailedMessage(): string {
   return [
     '치지직 인증을 완료하지 못했습니다.',

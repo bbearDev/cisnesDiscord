@@ -23,7 +23,7 @@ import { ManualClock } from '../../src/runtime/clock.js';
  */
 
 interface RestCall {
-  verb: 'post' | 'put' | 'patch';
+  verb: 'post' | 'put' | 'patch' | 'delete';
   route: string;
   data: { body?: unknown; signal?: AbortSignal } | undefined;
 }
@@ -47,7 +47,7 @@ function stubClient(reply: (call: RestCall) => unknown = () => ({ id: 'msg-1' })
     };
 
   const client = {
-    rest: { post: run('post'), put: run('put'), patch: run('patch') },
+    rest: { post: run('post'), put: run('put'), patch: run('patch'), delete: run('delete') },
     on(name: string, fn: () => void) {
       listeners.set(name, [...(listeners.get(name) ?? []), fn]);
       return this;
@@ -145,6 +145,17 @@ describe('createDiscordGateway — 주입점', () => {
     expect(stub.calls[1]?.data?.body).toEqual({ nick: '시스네팬' });
     // null 은 "닉네임 해제" 다 — undefined 로 접으면 변경 자체가 안 나간다.
     expect(stub.calls[2]?.data?.body).toEqual({ nick: null });
+  });
+
+  it('역할 회수는 DELETE 같은 경로다 — 부여의 반대 동사 (`/블랙리스트 추가`)', async () => {
+    const stub = stubClient(() => undefined);
+    const gw = createDiscordGateway({ token: 't', client: stub.client });
+    const ac = new AbortController();
+
+    await gw.removeRole('g1', 'u1', 'r1', { signal: ac.signal });
+
+    expect(stub.calls[0]).toMatchObject({ verb: 'delete', route: '/guilds/g1/members/u1/roles/r1' });
+    expect(stub.calls[0]?.data?.signal).toBe(ac.signal);
   });
 
   it('★ editMessage 는 PATCH /channels/{c}/messages/{m} 이고 본문·시그널을 그대로 넘긴다 (인증 패널 갱신)', async () => {

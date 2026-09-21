@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { createFollowerChecker, type FollowerChecker } from '../../src/chzzk/follower-check.js';
 import { createViewerTokenClient, type ViewerTokenClient } from '../../src/chzzk/oauth/viewer-token.js';
+import { createBlacklistCommand, type BlacklistGateway } from '../../src/discord/commands/blacklist.js';
 import { createAuthGuard, type AuthGuard } from '../../src/discord/commands/guard.js';
 import { createLinkCommand, LINK_BUTTON_LABEL } from '../../src/discord/commands/link.js';
 import { createStatusCommand } from '../../src/discord/commands/status.js';
@@ -13,6 +14,7 @@ import { ManualClock } from '../../src/runtime/clock.js';
 import { createHttpBudget } from '../../src/runtime/http-budget.js';
 import { openDb, type Db } from '../../src/store/db.js';
 import { migrate } from '../../src/store/migrate.js';
+import { createBlacklistRepo, type BlacklistRepo } from '../../src/store/repos/blacklist-repo.js';
 import { createLinkRepo, OPS_EVENT_DUPLICATE_CHANNEL, type LinkRepo } from '../../src/store/repos/link-repo.js';
 import { createVerificationSessionRepo } from '../../src/store/repos/verification-session-repo.js';
 import {
@@ -33,6 +35,8 @@ import { createVerificationSessionStore, type VerificationSessionStore } from '.
  *   · 비팔로워 5명 연속 → 상류 호출 **정확히 5회** (증폭 계수 1)
  *   · 같은 유저 30초 내 4회 → 상류 호출 **1회**
  *   · ★ 인증 후 **DB 전체 grep 에 access token 0건** (AC-10)
+ *   · ★ `/블랙리스트 추가` → 연동 삭제 + 역할 회수, 이후 버튼·콜백·AD-2 재조회 어느 길로도
+ *     연동되지 않는다. 다른 디스코드 계정으로 같은 치지직 채널을 붙이는 우회도 막힌다
  */
 
 const GUILD = '1111111111';
@@ -62,6 +66,7 @@ interface Env {
   clock: ManualClock;
   db: Db;
   links: LinkRepo;
+  blacklist: BlacklistRepo;
   sessions: VerificationSessionStore;
   guard: AuthGuard;
   followers: FollowerChecker;
@@ -69,17 +74,22 @@ interface Env {
   linkCmd: Command;
   unlinkCmd: SlashCommand;
   statusCmd: SlashCommand;
+  blacklistCmd: SlashCommand;
   startRoute: Route;
   callbackRoute: Route;
   /** code → 그 코드로 돌아올 시청자 */
   viewers: Map<string, Viewer>;
   counts: { token: number; usersMe: number; revoke: number; follower: number };
   roleGrants: string[];
+  /** `removeRole` 호출 기록 (`/블랙리스트 추가`) */
+  roleRevokes: string[];
   nickCalls: (string | null)[];
   logs: { message: string; extra?: Record<string, unknown> }[];
   failNickname: (on: boolean) => void;
   /** 역할 부여를 403 으로 실패시킨다 (봇 역할이 대상 역할보다 아래인 상황) */
   failRole: (on: boolean) => void;
+  /** 역할 회수를 403 으로 실패시킨다 */
+  failRevoke: (on: boolean) => void;
   /** 캐시가 "역할 없음" 을 아는 상태로 만든다 — `hasRole` 이 `false` 를 준다 */
   forgetRole: (userId: string) => void;
   /** 역할 부여가 응답을 영영 주지 않는다 — 시그널로만 끝난다 */
@@ -112,6 +122,7 @@ function makeEnv(): Env {
   migrate(db);
 
   const links = createLinkRepo(db);
+  const blacklist = createBlacklistRepo(db);
   const sessions = createVerificationSessionStore({
     repo: createVerificationSessionRepo(db),
     clock,
@@ -213,15 +224,17 @@ function makeEnv(): Env {
   });
 
   const roleGrants: string[] = [];
+  const roleRevokes: string[] = [];
   const nickCalls: (string | null)[] = [];
   const held = new Set<string>();
   /** `hasRole` 이 `false` 를 줄 대상 — "캐시에 있는데 역할이 없다" */
   const knownMissing = new Set<string>();
   let nicknameFails = false;
   let roleFails = false;
+  let revokeFails = false;
   let roleHangs = false;
 
-  const gateway: GateGateway = {
+  const gateway: GateGateway & BlacklistGateway = {
     addRole(guildId, userId, roleId, o): Promise<void> {
       if (roleHangs) {
         // ★ 절대 스스로 끝나지 않는다. 시그널만이 이 프라미스를 끝낸다.
@@ -243,6 +256,15 @@ function makeEnv(): Env {
       knownMissing.delete(`${guildId}:${userId}:${roleId}`);
       return Promise.resolve();
     },
+    removeRole(guildId, userId, roleId): Promise<void> {
+      if (revokeFails) {
+        return Promise.reject(new DiscordSendError('forbidden', '봇 역할이 대상 역할보다 아래입니다', 403));
+      }
+      roleRevokes.push(`${guildId}:${userId}:${roleId}`);
+      held.delete(`${guildId}:${userId}:${roleId}`);
+      knownMissing.add(`${guildId}:${userId}:${roleId}`);
+      return Promise.resolve();
+    },
     setNickname(_g, _u, nickname): Promise<void> {
       if (nicknameFails) {
         return Promise.reject(new DiscordSendError('forbidden', '봇보다 높은 역할입니다', 403));
@@ -262,6 +284,7 @@ function makeEnv(): Env {
   const linkCmd = createLinkCommand({
     sessions,
     links,
+    blacklist,
     guard,
     clock,
     publicBaseUrl: PUBLIC_BASE,
@@ -272,6 +295,13 @@ function makeEnv(): Env {
   });
   const unlinkCmd = createUnlinkCommand({ links, clock, onLog });
   const statusCmd = createStatusCommand({ links });
+  const blacklistCmd = createBlacklistCommand({
+    blacklist,
+    gateway,
+    resolveVerifiedRoleId: () => ROLE,
+    clock,
+    onLog,
+  });
 
   const startRoute = createOAuthStartRoute({
     sessions,
@@ -287,6 +317,7 @@ function makeEnv(): Env {
     viewerToken,
     followers,
     links,
+    blacklist,
     gateway,
     clock,
     resolveGuild: () => ({ guildId: GUILD, verifiedRoleId: ROLE }),
@@ -297,6 +328,7 @@ function makeEnv(): Env {
     clock,
     db,
     links,
+    blacklist,
     sessions,
     guard,
     followers,
@@ -304,11 +336,13 @@ function makeEnv(): Env {
     linkCmd,
     unlinkCmd,
     statusCmd,
+    blacklistCmd,
     startRoute,
     callbackRoute,
     viewers,
     counts,
     roleGrants,
+    roleRevokes,
     nickCalls,
     logs,
     failNickname: (on) => {
@@ -316,6 +350,9 @@ function makeEnv(): Env {
     },
     failRole: (on) => {
       roleFails = on;
+    },
+    failRevoke: (on) => {
+      revokeFails = on;
     },
     forgetRole: (userId) => {
       knownMissing.add(`${GUILD}:${userId}:${ROLE}`);
@@ -885,6 +922,185 @@ describe('운영 명령', () => {
   });
 });
 
+describe('★★ /블랙리스트 — 역할을 떼고 재인증을 막는다', () => {
+  const VIEWER_A = {
+    channelId: 'aaaa1111bbbb2222cccc3333dddd4444',
+    channelName: '시청자A',
+    isFollower: true,
+  };
+
+  /** 운영자가 userA 를 차단한다 */
+  async function blockA(reason?: string): Promise<CommandReply> {
+    return env.blacklistCmd.execute({
+      guildId: GUILD,
+      userId: 'admin',
+      isOperator: true,
+      subcommand: '추가',
+      targetUserId: 'userA',
+      ...(reason === undefined ? {} : { reason }),
+    });
+  }
+
+  it('추가 → 연동 행 삭제 + 역할 회수 1회 + 차단 행에 치지직 채널이 복사된다', async () => {
+    await fullFlow(env, 'userA', VIEWER_A);
+    expect(env.links.get(GUILD, 'userA')).toBeDefined();
+
+    const reply = await blockA('도배');
+    expect(reply.ephemeral).toBe(true);
+    expect(reply.content).toContain('블랙리스트에 추가했습니다');
+    expect(reply.content).toContain('시청자A');
+    expect(reply.content).toContain('회수했습니다');
+    expect(reply.content).toContain('사유: 도배');
+
+    expect(env.links.get(GUILD, 'userA')).toBeUndefined();
+    expect(env.roleRevokes).toEqual([`${GUILD}:userA:${ROLE}`]);
+    expect(env.blacklist.get(GUILD, 'userA')).toMatchObject({
+      chzzkChannelId: VIEWER_A.channelId,
+      chzzkChannelName: '시청자A',
+      reason: '도배',
+      addedBy: 'admin',
+    });
+    // 이력은 ops_events 에 남는다
+    expect(env.links.opsEvents('blacklist_added')).toHaveLength(1);
+  });
+
+  it('★ 차단 뒤 인증 버튼 → 안내만, state 0개 · 상류 0회', async () => {
+    await fullFlow(env, 'userA', VIEWER_A);
+    await blockA();
+    const before = { ...env.counts };
+
+    const reply = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(reply.content).toContain('차단');
+    expect(linkButtonUrl(reply)).toBeUndefined();
+    expect(env.sessions.pendingCount()).toBe(0);
+    expect(env.counts).toEqual(before);
+    expect(env.links.get(GUILD, 'userA')).toBeUndefined();
+  });
+
+  it('★★ 차단 전에 받은 링크로 늦게 돌아와도 콜백이 막는다 — 팔로워 조회 0회, 연동·역할 없음', async () => {
+    // 차단 전에 링크를 받아 둔다 (아직 연동 없음 → 디스코드 계정만 차단된다)
+    env.viewers.set('code-A', VIEWER_A);
+    const a = await runLink(env, 'userA');
+    const start = await runStart(env, a.state);
+    await blockA();
+    const roleGrantsBefore = env.roleGrants.length;
+
+    env.clock.advance(60_000);
+    const res = await runCallback(env, a.state, 'code-A', start.cookie);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toContain('차단');
+    expect(env.counts.follower).toBe(0);
+    expect(env.links.get(GUILD, 'userA')).toBeUndefined();
+    expect(env.roleGrants).toHaveLength(roleGrantsBefore);
+    expect(env.logs.some((l) => l.message === '차단된 계정의 인증 거부' && l.extra?.['matchedBy'] === 'discord-user')).toBe(true);
+  });
+
+  it('★★ 우회 — 다른 디스코드 계정으로 같은 치지직 채널을 붙여도 막힌다', async () => {
+    await fullFlow(env, 'userA', VIEWER_A);
+    await blockA();
+
+    // userB 가 A 의 치지직 계정으로 인증을 시도한다
+    const res = await fullFlow(env, 'userB', VIEWER_A, 'code-B');
+
+    expect(res.status).toBe(403);
+    expect(env.links.get(GUILD, 'userB')).toBeUndefined();
+    expect(env.roleGrants).toEqual([`${GUILD}:userA:${ROLE}`]); // 차단 전 A 의 것 하나뿐
+    expect(env.logs.some((l) => l.message === '차단된 계정의 인증 거부' && l.extra?.['matchedBy'] === 'chzzk-channel')).toBe(true);
+  });
+
+  it('★★ AD-2 재조회가 돌아오기 전에 차단되면 재조회로도 연동되지 않는다', async () => {
+    const clickAfter = Date.parse('2026-09-06T18:56:00.000Z');
+    env.clock.advance(clickAfter - env.clock.now());
+    const viewer = { ...VIEWER_A, isFollower: false };
+    env.viewers.set('code-A', viewer);
+    const a = await runLink(env, 'userA');
+    const start = await runStart(env, a.state);
+    const res = await runCallback(env, a.state, 'code-A', start.cookie);
+    expect(res.body).toContain('자동으로 한 번 더');
+
+    // 그 사이 운영자가 차단했다
+    await blockA();
+
+    viewer.isFollower = true;
+    env.setCachedAt('2026-09-06T19:05:00.000Z');
+    env.clock.advance(30 * 60_000);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(env.followers.metrics.rechecks).toBe(1);
+    expect(env.links.get(GUILD, 'userA')).toBeUndefined();
+    expect(env.roleGrants).toHaveLength(0);
+  });
+
+  it('해제 → 다시 인증하면 연동·역할이 붙는다 (해제가 되살리지는 않는다)', async () => {
+    await fullFlow(env, 'userA', VIEWER_A);
+    await blockA();
+
+    const lifted = await env.blacklistCmd.execute({
+      guildId: GUILD,
+      userId: 'admin',
+      isOperator: true,
+      subcommand: '해제',
+      targetUserId: 'userA',
+    });
+    expect(lifted.content).toContain('해제했습니다');
+    expect(env.blacklist.get(GUILD, 'userA')).toBeUndefined();
+    // 해제 자체는 아무것도 되살리지 않는다
+    expect(env.links.get(GUILD, 'userA')).toBeUndefined();
+    expect(env.roleGrants).toHaveLength(1);
+
+    // 본인이 다시 인증한다 (첫 클릭에서 2분 지나 쿨다운 밖) — 자기 자신 때문에 AC-7 을 맞지 않는다
+    const res = await fullFlow(env, 'userA', VIEWER_A, 'code-A2');
+    expect(res.status).toBe(200);
+    expect(env.links.get(GUILD, 'userA')?.chzzkChannelName).toBe('시청자A');
+    expect(env.roleGrants).toEqual([`${GUILD}:userA:${ROLE}`, `${GUILD}:userA:${ROLE}`]);
+    expect(env.links.opsEvents('blacklist_removed')).toHaveLength(1);
+  });
+
+  it('★ 역할 회수가 403 이어도 차단·연동 삭제는 끝나 있다 — 응답이 "직접 제거" 를 말한다', async () => {
+    await fullFlow(env, 'userA', VIEWER_A);
+    env.failRevoke(true);
+
+    const reply = await blockA();
+    expect(reply.content).toContain('회수하지 못했습니다');
+    expect(reply.content).toContain('직접 제거');
+    expect(env.blacklist.get(GUILD, 'userA')).toBeDefined();
+    expect(env.links.get(GUILD, 'userA')).toBeUndefined();
+    expect(env.roleRevokes).toHaveLength(0);
+
+    // 그래도 재인증은 막혀 있다
+    const again = await env.linkCmd.execute({ guildId: GUILD, userId: 'userA' });
+    expect(again.content).toContain('차단');
+  });
+
+  it('목록 — 임베드 하나에 최근 순으로, 비어 있으면 임베드 없이 안내', async () => {
+    const empty = await env.blacklistCmd.execute({ guildId: GUILD, userId: 'admin', isOperator: true, subcommand: '목록' });
+    expect(empty.embeds).toBeUndefined();
+    expect(empty.content).toContain('비어 있습니다');
+
+    await fullFlow(env, 'userA', VIEWER_A);
+    await blockA('도배');
+
+    const listed = await env.blacklistCmd.execute({ guildId: GUILD, userId: 'admin', isOperator: true, subcommand: '목록' });
+    expect(listed.ephemeral).toBe(true);
+    expect(listed.embeds).toHaveLength(1);
+    const embed = listed.embeds?.[0];
+    expect(embed?.title).toContain('1명');
+    expect(embed?.description).toContain('<@userA>');
+    expect(embed?.description).toContain('시청자A');
+    expect(embed?.description).toContain('도배');
+    expect(embed?.description).toContain('<@admin>');
+  });
+
+  it('운영자가 아니면 어느 하위 명령도 거부된다', async () => {
+    for (const subcommand of ['추가', '해제', '목록']) {
+      const denied = await env.blacklistCmd.execute({ guildId: GUILD, userId: 'userB', subcommand, targetUserId: 'userA' });
+      expect(denied.content).toContain('운영자만');
+    }
+    expect(env.blacklist.count(GUILD)).toBe(0);
+  });
+});
+
 describe('실패 격리', () => {
   it('토큰 교환이 실패하면 안내만 하고 아무것도 바꾸지 않는다', async () => {
     const a = await runLink(env, 'userA');
@@ -906,6 +1122,7 @@ describe('실패 격리', () => {
       viewerToken: env.viewerToken,
       followers: env.followers,
       links: env.links,
+      blacklist: env.blacklist,
       gateway: { addRole: () => Promise.resolve(), setNickname: () => Promise.resolve() },
       clock: env.clock,
       resolveGuild: () => undefined,

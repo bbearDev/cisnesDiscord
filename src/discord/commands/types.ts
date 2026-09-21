@@ -1,4 +1,4 @@
-import type { ActionRow } from '../client.js';
+import type { ActionRow, AnnouncementEmbed } from '../client.js';
 
 /**
  * 명령의 공통 모양 (계획 §S4 · `docs/spec-auth-panel.md`).
@@ -27,10 +27,19 @@ export interface CommandContext {
    *   **표시 제어를 권한 검사로 쓰면 안 된다.**
    */
   isOperator?: boolean | undefined;
-  /** `/연동해제` · `/연동상태` 의 대상 멤버 */
+  /** `/연동해제` · `/연동상태` · `/블랙리스트` 의 대상 멤버 */
   targetUserId?: string | undefined;
   /** `/인증채널` 의 대상 채널 */
   targetChannelId?: string | undefined;
+  /**
+   * 하위 명령 이름 (`/블랙리스트 추가|해제|목록`). 하위 명령이 없는 명령에서는 비어 있다.
+   *
+   * ★ 명령 본체가 `switch` 로 가르고, 모르는 값은 **거부한다** — 등록된 정의와 코드가
+   *   어긋난 날(옛 정의가 디스코드에 남았다) 조용히 첫 갈래로 가면 안 된다.
+   */
+  subcommand?: string | undefined;
+  /** `/블랙리스트 추가` 의 사유. 자유 문자열이라 **표시할 때만** 쓰고 판정에는 쓰지 않는다 */
+  reason?: string | undefined;
 }
 
 export interface CommandReply {
@@ -44,6 +53,8 @@ export interface CommandReply {
    *   (2026-09-08). 링크 버튼의 URL 은 크롤링 대상이 아니다.
    */
   components?: ActionRow[];
+  /** 답장에 붙일 임베드. `/블랙리스트 목록` 이 여기에 목록을 싣는다 */
+  embeds?: AnnouncementEmbed[];
   /**
    * ★ 항상 `true`.
    *
@@ -54,7 +65,12 @@ export interface CommandReply {
   ephemeral: true;
 }
 
-/** 디스코드 명령 옵션 타입 중 우리가 쓰는 것 (`USER` = 6 · `CHANNEL` = 7) */
+/**
+ * 디스코드 명령 옵션 타입 중 우리가 쓰는 것
+ * (`SUB_COMMAND` = 1 · `STRING` = 3 · `USER` = 6 · `CHANNEL` = 7).
+ */
+export const OPTION_TYPE_SUB_COMMAND = 1;
+export const OPTION_TYPE_STRING = 3;
 export const OPTION_TYPE_USER = 6;
 export const OPTION_TYPE_CHANNEL = 7;
 /** 채널 옵션이 받을 채널 종류 — `GUILD_TEXT` = 0. 패널은 텍스트 채널에만 놓인다 */
@@ -64,9 +80,14 @@ export interface CommandOptionDefinition {
   type: number;
   name: string;
   description: string;
-  required: boolean;
+  /** `SUB_COMMAND` 에는 없다 — 디스코드가 그 자리에 `required` 를 허용하지 않는다 */
+  required?: boolean;
   /** `CHANNEL` 옵션에서 고를 수 있는 채널 종류. 디스코드가 선택 UI 에서 걸러 준다 */
   channel_types?: number[];
+  /** `STRING` 옵션의 길이 상한. 넘겨 보내면 디스코드가 입력 자체를 막는다 */
+  max_length?: number;
+  /** `SUB_COMMAND` 의 자기 옵션. 한 단계만 쓴다 — 하위 명령 그룹은 만들지 않는다 */
+  options?: CommandOptionDefinition[];
 }
 
 /**

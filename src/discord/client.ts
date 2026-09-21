@@ -10,8 +10,8 @@ import type { ButtonStyle, ComponentType } from 'discord.js';
  *
  * ★ 왜 얇은 인터페이스(`DiscordGateway`)를 따로 두는가.
  *   `discord.js` 의 `Client` 를 그대로 노출하면 하니스가 그 거대한 표면을 전부
- *   흉내 내야 하고, 실제로 우리가 쓰는 것은 **발송 · 역할 부여 · 닉네임 변경**
- *   셋뿐이다. 표면을 우리가 쓰는 만큼으로 좁히는 것이 하니스를 가능하게 한다.
+ *   흉내 내야 하고, 실제로 우리가 쓰는 것은 **발송 · 역할 부여/회수 · 닉네임 변경**
+ *   뿐이다. 표면을 우리가 쓰는 만큼으로 좁히는 것이 하니스를 가능하게 한다.
  *
  * ★ 발송을 `channel.send()` 가 아니라 **REST 로** 한다.
  *   §5.6.1 이 모든 아웃바운드에 `AbortSignal` 타임아웃을 요구하는데
@@ -174,6 +174,13 @@ export interface DiscordGateway {
     opts?: SendOptions,
   ): Promise<void>;
   addRole(guildId: string, userId: string, roleId: string, opts?: SendOptions): Promise<void>;
+  /**
+   * 역할 회수 (`/블랙리스트 추가`). 부여와 마찬가지로 멱등이다 — 없는 역할을 떼도 오류가 아니다.
+   *
+   * ★ 게이트(`gate.ts`)는 이것을 쓰지 않는다. 인증 경로는 역할을 **주기만** 하고, 떼는 것은
+   *   운영자 명령 하나뿐이다 — 두 방향이 한 함수에 섞이면 실수 한 줄이 전원의 역할을 뗀다.
+   */
+  removeRole(guildId: string, userId: string, roleId: string, opts?: SendOptions): Promise<void>;
   setNickname(
     guildId: string,
     userId: string,
@@ -338,6 +345,14 @@ export function createDiscordGateway(opts: DiscordGatewayOptions): DiscordGatewa
     async addRole(guildId, userId, roleId, sendOpts): Promise<void> {
       await call(() =>
         client.rest.put(Routes.guildMemberRole(guildId, userId, roleId), {
+          ...(sendOpts?.signal ? { signal: sendOpts.signal } : {}),
+        }),
+      );
+    },
+
+    async removeRole(guildId, userId, roleId, sendOpts): Promise<void> {
+      await call(() =>
+        client.rest.delete(Routes.guildMemberRole(guildId, userId, roleId), {
           ...(sendOpts?.signal ? { signal: sendOpts.signal } : {}),
         }),
       );

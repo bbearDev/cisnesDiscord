@@ -71,6 +71,8 @@ export const VERIFICATION_RESULTS = [
   'gate-failed',
   /** 길드 설정을 찾지 못했다 */
   'no-guild',
+  /** `/블랙리스트` 에 있는 디스코드 계정 또는 치지직 채널이다 — 연동·역할 없이 끝낸다 */
+  'blacklisted',
 ] as const;
 export type VerificationResult = (typeof VERIFICATION_RESULTS)[number];
 

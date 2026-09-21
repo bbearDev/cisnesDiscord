@@ -1,7 +1,7 @@
 import { MessageFlags, PermissionFlagsBits } from 'discord.js';
 import type { Interaction } from 'discord.js';
 
-import type { ActionRow } from './client.js';
+import type { ActionRow, AnnouncementEmbed } from './client.js';
 import type { Command, CommandContext, CommandReply, SlashCommand } from './commands/types.js';
 
 /**
@@ -33,18 +33,23 @@ export interface InteractionRouterDeps {
   buttons: ReadonlyMap<string, Command>;
   dispatchCommand(name: string, ctx: CommandContext): Promise<CommandReply>;
   dispatchButton(customId: string, ctx: CommandContext): Promise<CommandReply>;
-  /** `/연동해제` · `/연동상태` 의 멤버 옵션 이름 */
+  /** `/연동해제` · `/연동상태` · `/블랙리스트` 의 멤버 옵션 이름 */
   targetUserOption: string;
   /** `/인증채널` 의 채널 옵션 이름 */
   targetChannelOption: string;
+  /** `/블랙리스트 추가` 의 사유 옵션 이름 */
+  reasonOption: string;
 }
 
 export const DM_REJECT_MESSAGE = '이 명령은 서버 안에서만 사용할 수 있습니다.';
 
-function replyBody(reply: CommandReply): { content: string; components?: ActionRow[] } {
+function replyBody(
+  reply: CommandReply,
+): { content: string; components?: ActionRow[]; embeds?: AnnouncementEmbed[] } {
   return {
     content: reply.content,
     ...(reply.components === undefined ? {} : { components: reply.components }),
+    ...(reply.embeds === undefined ? {} : { embeds: reply.embeds }),
   };
 }
 
@@ -76,10 +81,14 @@ export function createInteractionRouter(
       return;
     }
 
+    // ★ `getSubcommand(false)` — 하위 명령이 없는 명령에서 `true` 로 부르면 던진다.
+    //   옵션 조회는 하위 명령 안의 것도 같은 이름으로 나온다 (discord.js 가 끌어올린다).
     const ctx: CommandContext = {
       ...base,
       targetUserId: interaction.options.getUser(deps.targetUserOption)?.id,
       targetChannelId: interaction.options.getChannel(deps.targetChannelOption)?.id,
+      subcommand: interaction.options.getSubcommand(false) ?? undefined,
+      reason: interaction.options.getString(deps.reasonOption) ?? undefined,
     };
 
     // ★ 응답 전에 REST 를 부르는 명령(`/인증채널`)은 3초 창을 넘길 수 있다 —

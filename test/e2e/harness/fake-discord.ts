@@ -21,7 +21,7 @@ import {
  * **최소 능력 4종** (계획 §S3 표. 이보다 적으면 §9.3 의 어떤 행이 판정 불가가 된다)
  *   ① 발송 메시지 캡처 — 내용 · 대상 채널 · 호출 횟수 · 순서
  *   ② 게이트웨이 재연결 이벤트 주입 + 카운트 (AC-P3 (a))
- *   ③ 역할 부여 · 닉네임 변경 호출 기록 (AC-6 · AC-11 · AC-12)
+ *   ③ 역할 부여 · 회수 · 닉네임 변경 호출 기록 (AC-6 · AC-11 · AC-12)
  *   ④ 실패 주입 — 429(`Retry-After`) · 403 · 5xx · 무응답(타임아웃)
  *
  * ★ ②의 카운터는 `src/discord/client.ts` 의 `createGatewayCounter` 를 **그대로
@@ -97,6 +97,8 @@ export interface FakeDiscord extends DiscordGateway {
   /** `editMessage` 호출 기록 (인증 패널 갱신) */
   readonly edited: readonly EditRecord[];
   readonly roleGrants: readonly RoleGrantRecord[];
+  /** `removeRole` 호출 기록 (`/블랙리스트 추가`). 모양은 부여 기록과 같다 */
+  readonly roleRevokes: readonly RoleGrantRecord[];
   readonly nicknames: readonly NicknameRecord[];
   readonly loginCount: number;
   readonly destroyed: boolean;
@@ -148,6 +150,7 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
   const edited: EditRecord[] = [];
   const forgotten = new Set<string>();
   const roleGrants: RoleGrantRecord[] = [];
+  const roleRevokes: RoleGrantRecord[] = [];
   const nicknames: NicknameRecord[] = [];
   const gatewayEvents: GatewayEventRecord[] = [];
 
@@ -211,6 +214,9 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
     },
     get roleGrants() {
       return roleGrants;
+    },
+    get roleRevokes() {
+      return roleRevokes;
     },
     get nicknames() {
       return nicknames;
@@ -279,6 +285,23 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
       roleGrants.push({ guildId, userId, roleId, ok: true, at: now() });
     },
 
+    async removeRole(guildId: string, userId: string, roleId: string, sendOpts?: SendOptions): Promise<void> {
+      try {
+        await gate(nextFailure(), sendOpts?.signal);
+      } catch (e: unknown) {
+        roleRevokes.push({
+          guildId,
+          userId,
+          roleId,
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+          at: now(),
+        });
+        throw e;
+      }
+      roleRevokes.push({ guildId, userId, roleId, ok: true, at: now() });
+    },
+
     async setNickname(
       guildId: string,
       userId: string,
@@ -339,6 +362,7 @@ export function createFakeDiscord(opts: FakeDiscordOptions = {}): FakeDiscord {
       edited.length = 0;
       forgotten.clear();
       roleGrants.length = 0;
+      roleRevokes.length = 0;
       nicknames.length = 0;
       queued.length = 0;
       always = undefined;
