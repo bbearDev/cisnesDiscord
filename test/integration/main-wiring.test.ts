@@ -15,6 +15,7 @@ import {
 } from '../../src/main.js';
 import { createFakeChzzkbot } from '../e2e/harness/fake-chzzkbot.js';
 import { createFakeDiscord } from '../e2e/harness/fake-discord.js';
+import { FOLLOW_DAYS_COMMAND_NAME } from '../../src/discord/commands/follow-days.js';
 import { GATE_CHANNEL_COMMAND_NAME } from '../../src/discord/commands/gate-channel.js';
 import { WEBSUB_RENEW_COMMAND_NAME } from '../../src/discord/commands/websub-renew.js';
 import { UNKNOWN_CHANNELS_SEEN_KEY } from '../../src/live/live-poller.js';
@@ -346,15 +347,15 @@ describe('인증 (§S4)', () => {
     expect(reply.content).toContain('더 이상 쓰이지 않습니다');
   });
 
-  it('★★ 슬래시로 등록되는 것은 운영자용 넷뿐이다 — `인증` 은 없다', async () => {
+  it('★★ 슬래시로 등록되는 것은 운영자용 다섯뿐이다 — `인증` 은 없다', async () => {
     const { app } = await boot((u) => {
       u.loadLiveFixture('chzzkbot/api-live-2channels-idle.json');
     });
     expect([...app.commands.keys()].sort()).toEqual(
-      ['연동상태', '연동해제', GATE_CHANNEL_COMMAND_NAME, WEBSUB_RENEW_COMMAND_NAME].sort(),
+      ['연동상태', '연동해제', GATE_CHANNEL_COMMAND_NAME, WEBSUB_RENEW_COMMAND_NAME, FOLLOW_DAYS_COMMAND_NAME].sort(),
     );
     expect([...app.buttons.keys()].sort()).toEqual([AUTH_PANEL_BUTTON_LINK, AUTH_PANEL_BUTTON_STATUS].sort());
-    // 운영자용 넷 전부 Manage Guild 로 노출이 막힌다
+    // 운영자용 다섯 전부 Manage Guild 로 노출이 막힌다
     for (const c of app.commands.values()) {
       expect(c.definition.default_member_permissions, c.definition.name).toBe('32');
     }
@@ -363,6 +364,8 @@ describe('인증 (§S4)', () => {
     expect(app.commands.get('연동해제')?.defer).toBeUndefined();
     // ★ `/구독갱신` 도 defer 다 — 갱신 1건 예산이 45초라 3초 창을 반드시 넘긴다.
     expect(app.commands.get(WEBSUB_RENEW_COMMAND_NAME)?.defer).toBe(true);
+    // ★ `/팔로우` 도 defer 다 — 상류 조회 회당 타임아웃이 3초다.
+    expect(app.commands.get(FOLLOW_DAYS_COMMAND_NAME)?.defer).toBe(true);
     expect(app.buttons.get(AUTH_PANEL_BUTTON_LINK)?.defer).toBe(true);
     expect(app.buttons.get(AUTH_PANEL_BUTTON_STATUS)?.defer).toBeUndefined();
   });

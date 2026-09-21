@@ -63,8 +63,13 @@ export function nextRetryAt(lookup: FollowerLookup, now: number): number {
   return now + cacheMs;
 }
 
-/** 스냅샷 시각 한 줄. `cachedAt` 이 없으면(형태 불량) 그 사실을 말한다 */
-function snapshotLine(lookup: FollowerLookup): string {
+/**
+ * 스냅샷 시각 한 줄. `cachedAt` 이 없으면(형태 불량) 그 사실을 말한다.
+ *
+ * ★ 내보내는 이유: `/팔로우` 도 같은 줄을 싣는다. 운영자가 보는 스냅샷 시각과
+ *   멤버가 거부 안내에서 보는 스냅샷 시각이 **같은 문장**이어야 둘을 맞대어 볼 수 있다.
+ */
+export function snapshotLine(lookup: FollowerLookup): string {
   if (lookup.cachedAt === undefined) {
     return '· 팔로워 목록 스냅샷 시각: 확인하지 못했습니다';
   }
@@ -83,6 +88,11 @@ const UNKNOWN_DETAIL: Readonly<Record<FollowerUnknownReason, string>> = {
   'wrong-channel': '팔로워 확인 응답이 이 채널의 것이 아닙니다',
   'bad-shape': '팔로워 확인 응답을 해석하지 못했습니다',
 };
+
+/** `unknown` 사유 한 마디 — `reason` 이 없으면(있을 수 없지만) 일반 문구 */
+export function unknownReasonDetail(lookup: FollowerLookup): string {
+  return lookup.reason === undefined ? '팔로워 확인에 실패했습니다' : UNKNOWN_DETAIL[lookup.reason];
+}
 
 /**
  * ★ `no` — 거부 안내. **스냅샷 시각 + 다음 재시도 시각을 둘 다 싣는다** (R-4).
@@ -112,8 +122,7 @@ export function notFollowerMessage(lookup: FollowerLookup, now: number): string 
  *   "팔로우하세요" 라고 쓰지 않는다. 우리가 모르는 것이지 그 사람이 안 한 것이 아니다.
  */
 export function unknownMessage(lookup: FollowerLookup, now: number): string {
-  const detail =
-    lookup.reason === undefined ? '팔로워 확인에 실패했습니다' : UNKNOWN_DETAIL[lookup.reason];
+  const detail = unknownReasonDetail(lookup);
   return [
     `팔로워 여부를 **확인하지 못했습니다** — 팔로우하지 않으셨다는 뜻이 아닙니다.`,
     `· 사유: ${detail}`,
