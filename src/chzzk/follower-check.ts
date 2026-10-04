@@ -437,3 +437,269 @@ export function createFollowerChecker(opts: FollowerCheckerOptions): FollowerChe
     },
   };
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  전수 동기화 요청 (`/팔로우갱신`)
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * 상류에 우리 채널의 팔로워 캐시를 **지금** 전수로 다시 받으라고 한다.
+ *
+ *   POST {chzzkbot.baseUrl}/api/followers/:channelId/sync
+ *   x-chzzkbot-token: <LIVE_API_TOKEN>
+ *
+ * ★ 이 파일에 두는 이유: `test/integration/no-direct-follower-api.test.ts` 가
+ *   `/api/followers/` 를 만드는 파일을 **이 파일 하나로** 못 박는다. 상류에 팔로워를
+ *   묻는 경로가 둘로 갈리면 그 검사가 지키는 R1 의 경계가 흐려진다. 판정기와는
+ *   **다른 팩토리**다 — 판정기는 3상태로 접고, 이쪽은 상류 응답을 그대로 가른다.
+ *
+ * ★ 페이징은 상류가 한다. 우리는 한 번 부르고 결과를 받을 뿐이다 (R1 그대로).
+ *
+ * ★★ 우리 쪽에 무효화할 것이 **없다.** 판정 결과를 저장하지 않는다 — 인증은 매번
+ *   상류에 새로 묻는다(인증당 1회). 그래서 동기화가 끝나면 그다음 `인증` 클릭이 곧바로
+ *   새 목록을 본다. 이미 예약된 AD-2 재조회는 앞당기지 않는다 — 예약 시각에 돌면 그때도
+ *   새 목록을 보고, 그 전에 본인이 다시 누르면 그 클릭이 먼저 통과한다. 앞당기는 장치를
+ *   만들면 "정확히 1회" 를 지키는 구조(`scheduleRecheck`)를 건드리게 된다.
+ */
+export type FollowerSyncResult =
+  /**
+   * 200 — 상류가 전수를 다시 받았다.
+   *
+   * ★ `joined` — 이미 돌던 전수에 **합류**했다(상류가 겹친 요청을 하나로 합친다).
+   *   그 전수는 멤버가 팔로우하기 **전에** 시작됐을 수 있다. 합류는 상류 쿨다운을
+   *   쓰지 않으므로 한 번 더 누르면 새 전수가 돈다. 옛 판 상류는 이 키가 없다.
+   */
+  | { outcome: 'synced'; count: number; cachedAt: string; durationMs: number; joined?: true }
+  /** 429 — 상류 채널별 쿨다운(60초). 값은 상류가 준 것만 싣는다 */
+  | { outcome: 'cooldown'; retryAfterSec?: number; cachedAt?: string }
+  /** 502 — 상류가 치지직에서 목록을 받지 못했다. **기존 캐시는 그대로다** */
+  | { outcome: 'sync-failed'; lastError?: string }
+  /** 401 — 토큰 불일치 */
+  | { outcome: 'unauthorized' }
+  /**
+   * 404 `not_found` · 405 — 상류가 기능을 꺼 뒀거나 **이 경로를 모르는 옛 판**이다.
+   *
+   * ★ 둘을 가를 수 없다. 옛 판 chzzkbot 은 `/api/followers/…` 로 오는 POST 를
+   *   경로 판별 **전에** 405 HTML 로 돌려보낸다(상류 `web/server.ts` 의 POST 가드).
+   */
+  | { outcome: 'unsupported'; status: number }
+  /** 404 `channel_not_found` — 상류에 우리 채널이 등록돼 있지 않다 */
+  | { outcome: 'channel-not-found' }
+  /**
+   * 503 `shutting_down` — 상류가 재기동 중이라 기다리던 응답을 끊었다.
+   *
+   * ★ `unconfirmed` 와 가른다. 이 경우는 원인이 확정이고 할 일도 다르다 — 상류는
+   *   기동할 때 전수 동기화를 한 번 돌므로 **다시 누를 필요가 대개 없다.**
+   *   본문의 `error` 가 맞을 때만 이 갈래다 (502·429 와 같은 규칙).
+   */
+  | { outcome: 'shutting-down' }
+  /**
+   * 네트워크 오류(연결 거부·DNS) — 요청이 상류에 **닿지 않았다.**
+   *
+   * ★ `unconfirmed` 와 가른다. 닿지 않았으면 동기화도 시작되지 않았으므로
+   *   *"계속 진행 중일 수 있다"* 는 거짓말이 된다. 할 일은 상류가 떠 있는지 보는 것이다.
+   */
+  | { outcome: 'unreachable'; detail: string }
+  /**
+   * 타임아웃·예산·형태 불량·남의 채널 응답·그 밖의 상태.
+   *
+   * ★ **실패가 아니라 미확인이다.** 타임아웃이어도 상류 동기화는 계속 돈다 —
+   *   끊긴 것은 우리 대기뿐이다.
+   */
+  | { outcome: 'unconfirmed'; detail: string };
+
+/** 200 본문. `version` 은 보지 않는다 — 판이 올라도 이 필드들이 있으면 읽는다 */
+const SyncOkBody = z.object({
+  channelId: z.string().min(1),
+  ok: z.literal(true),
+  count: z.number().int().nonnegative(),
+  cachedAt: z.string().min(1),
+  durationMs: z.number().nonnegative(),
+  /**
+   * 선택 — 옛 판에는 없다. ★ `.catch` 로 둔다: 선택 필드 하나가 이상하다고 **성공한
+   *   동기화**를 미확인으로 접으면 안 된다. 못 읽으면 "합류 아님" 과 같다.
+   */
+  joined: z.boolean().optional().catch(undefined),
+});
+
+/**
+ * 429 본문. `error:"cooldown"` 만 상류 쿨다운으로 읽는다. 나머지 필드는 선택이다.
+ *
+ * ★ `error` 를 요구하는 이유: 앞단 프록시·다른 미들웨어의 429 를 상류 쿨다운으로 읽으면
+ *   *"방금 갱신됐다"* 라는, 일어나지 않은 일을 적게 된다.
+ */
+const SyncCooldownBody = z.object({
+  error: z.literal('cooldown'),
+  channelId: z.string().optional(),
+  retryAfterSec: z.number().nonnegative().optional(),
+  cachedAt: z.string().nullable().optional(),
+});
+
+/**
+ * 502 본문. `error:"sync_failed"` 만 상류의 동기화 실패로 읽는다.
+ *
+ * ★★ chzzkbot 이 죽어 있으면 앞단 프록시가 **Bad Gateway(502)** 를 낸다. 그것을
+ *   `sync-failed` 로 읽으면 *"기존 목록으로 인증은 계속 됩니다"* 라고 적는데, 실제로는
+ *   상류가 없어 인증이 전부 `unknown` 이다 — 운영자를 정반대로 안심시킨다.
+ */
+const SyncFailedBody = z.object({
+  error: z.literal('sync_failed'),
+  channelId: z.string().optional(),
+  lastError: z.string().nullable().optional(),
+  /** 선택 — 받아만 둔다. 실패 문구는 합류 여부와 무관하다(기존 목록 유지는 같다) */
+  joined: z.boolean().optional().catch(undefined),
+});
+
+const ErrorBody = z.object({ error: z.string() });
+
+/** 실패 응답 본문을 JSON 으로 — 아니면(옛 판의 HTML 등) `undefined` */
+function parseJsonText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+export type FollowerSyncOptions = Pick<
+  FollowerCheckerOptions,
+  'budget' | 'baseUrl' | 'token' | 'channelId' | 'clock' | 'onLog'
+>;
+
+/**
+ * 대기열까지 포함한 요청 1건의 작업 예산.
+ *
+ * ★ 회당 타임아웃(60초)은 **나간 뒤**의 상한이다. 전역 동시성 상한(8)에 막혀 줄을 서는
+ *   시간은 거기 들지 않는다 — 90초를 넘기면 기존 `budget` 갈래(미확인)로 접는다.
+ *   90초 = 회당 60초 + 줄 30초. 디스코드 지연 응답 창(15분)보다 한참 짧다.
+ */
+export const FOLLOWER_SYNC_BUDGET_MS = 90_000;
+
+export interface FollowerSyncClient {
+  /**
+   * 한 번 요청하고 결과를 가른다. **절대 던지지 않는다.**
+   * 이미 나가 있는 요청이 있으면 **그 결과를 같이 기다린다** (아래 single-flight).
+   */
+  requestSync(): Promise<FollowerSyncResult>;
+}
+
+export function createFollowerSyncClient(opts: FollowerSyncOptions): FollowerSyncClient {
+  const base = opts.baseUrl.replace(/\/+$/, '');
+  const url = `${base}/api/followers/${encodeURIComponent(opts.channelId)}/sync`;
+
+  const log = (message: string, extra?: Record<string, unknown>): void => {
+    try {
+      opts.onLog?.(message, extra);
+    } catch {
+      /* 진단 로그가 요청을 죽이면 안 된다 (Principle 2) */
+    }
+  };
+
+  /** R5 와 같은 대조 — 토큰 하나가 등록된 모든 채널을 연다. 값이 있을 때만 본다 */
+  const otherChannel = (channelId: string | undefined): boolean =>
+    channelId !== undefined && channelId !== opts.channelId;
+
+  async function once(): Promise<FollowerSyncResult> {
+    const res = await opts.budget.request('follower-sync', url, {
+      method: 'POST',
+      headers: { [CHZZKBOT_TOKEN_HEADER]: opts.token, Accept: 'application/json' },
+      // ★ 재시도하지 않는다. 429 는 상류 쿨다운(60초)이라 기다려 다시 치면 운영자가
+      //   1분을 묶이고, 결과는 "방금 갱신됐다" 로 같다. 바로 돌려줘 사람이 판단한다.
+      maxRetries: 0,
+      deadlineAt: opts.clock.now() + FOLLOWER_SYNC_BUDGET_MS,
+    });
+
+    if (res.ok) {
+      const parsed = SyncOkBody.safeParse(res.body);
+      if (!parsed.success) return { outcome: 'unconfirmed', detail: '응답 형태 불량' };
+      if (otherChannel(parsed.data.channelId)) {
+        log('팔로워 동기화 응답의 channelId 가 우리 채널이 아닙니다 (R5)', {
+          got: parsed.data.channelId,
+          want: opts.channelId,
+        });
+        return { outcome: 'unconfirmed', detail: '응답이 이 채널의 것이 아님' };
+      }
+      const { count, cachedAt, durationMs, joined } = parsed.data;
+      return { outcome: 'synced', count, cachedAt, durationMs, ...(joined === true ? { joined } : {}) };
+    }
+
+    switch (res.kind) {
+      case 'timeout':
+        return { outcome: 'unconfirmed', detail: '제한 시간 초과' };
+      case 'budget':
+        return { outcome: 'unconfirmed', detail: '작업 예산 초과' };
+      case 'network':
+        return { outcome: 'unreachable', detail: res.detail.slice(0, 100) };
+      case 'bad-body':
+        return { outcome: 'unconfirmed', detail: '응답 형태 불량' };
+      case 'http':
+        break;
+    }
+
+    const body = parseJsonText(res.bodyText);
+    switch (res.status) {
+      case 429: {
+        const p = SyncCooldownBody.safeParse(body);
+        if (!p.success) return { outcome: 'unconfirmed', detail: 'HTTP 429' };
+        const b = p.data;
+        if (otherChannel(b.channelId)) return { outcome: 'unconfirmed', detail: '응답이 이 채널의 것이 아님' };
+        return {
+          outcome: 'cooldown',
+          ...(b.retryAfterSec === undefined ? {} : { retryAfterSec: Math.ceil(b.retryAfterSec) }),
+          ...(typeof b.cachedAt === 'string' && b.cachedAt !== '' ? { cachedAt: b.cachedAt } : {}),
+        };
+      }
+      case 502: {
+        const p = SyncFailedBody.safeParse(body);
+        if (!p.success) return { outcome: 'unconfirmed', detail: 'HTTP 502' };
+        const b = p.data;
+        if (otherChannel(b.channelId)) return { outcome: 'unconfirmed', detail: '응답이 이 채널의 것이 아님' };
+        return {
+          outcome: 'sync-failed',
+          ...(typeof b.lastError === 'string' && b.lastError !== '' ? { lastError: b.lastError } : {}),
+        };
+      }
+      case 401:
+        return { outcome: 'unauthorized' };
+      case 404: {
+        // ★ `channel_not_found` 만 따로 가른다. 나머지 404 는 본문이 무엇이든(옛 판·꺼짐)
+        //   "이 기능을 쓸 수 없다" 로 읽는다.
+        const p = ErrorBody.safeParse(body);
+        return p.success && p.data.error === 'channel_not_found'
+          ? { outcome: 'channel-not-found' }
+          : { outcome: 'unsupported', status: 404 };
+      }
+      case 405:
+        return { outcome: 'unsupported', status: 405 };
+      case 503: {
+        const p = ErrorBody.safeParse(body);
+        return p.success && p.data.error === 'shutting_down'
+          ? { outcome: 'shutting-down' }
+          : { outcome: 'unconfirmed', detail: 'HTTP 503' };
+      }
+      default:
+        return { outcome: 'unconfirmed', detail: `HTTP ${String(res.status)}` };
+    }
+  }
+
+  /**
+   * ★★ single-flight — 나가 있는 요청은 **하나**다.
+   *
+   *   상류는 겹친 동기화를 하나로 합치지만 **각 요청에 끝날 때 답한다.** 운영자가
+   *   "멈췄나" 하고 연타하면 그 수만큼 전역 동시성 슬롯(8)을 최대 60초씩 쥐고, 그동안
+   *   멤버의 `follower-lookup`(3초)이 줄에서 굶어 인증이 `unknown` 이 된다.
+   *   같은 프로세스 안의 겹친 호출은 여기서 한 요청의 결과를 나눠 받는다.
+   */
+  let inflight: Promise<FollowerSyncResult> | undefined;
+
+  return {
+    requestSync(): Promise<FollowerSyncResult> {
+      if (inflight !== undefined) return inflight;
+      const p = once().finally(() => {
+        inflight = undefined;
+      });
+      inflight = p;
+      return p;
+    },
+  };
+}
