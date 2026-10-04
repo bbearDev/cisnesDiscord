@@ -2,7 +2,11 @@ import { Events, Routes } from 'discord.js';
 import type { Client } from 'discord.js';
 import type { Logger } from 'pino';
 
-import { createFollowerChecker, type FollowerChecker } from './chzzk/follower-check.js';
+import {
+  createFollowerChecker,
+  createFollowerSyncClient,
+  type FollowerChecker,
+} from './chzzk/follower-check.js';
 import { createLiveApiClient } from './chzzk/live-api-client.js';
 import {
   createViewerTokenClient,
@@ -27,6 +31,7 @@ import {
 } from './discord/commands/gate-channel.js';
 import { BLACKLIST_REASON_OPTION_NAME, createBlacklistCommand } from './discord/commands/blacklist.js';
 import { createFollowDaysCommand } from './discord/commands/follow-days.js';
+import { createFollowRefreshCommand } from './discord/commands/follow-refresh.js';
 import { createLinkCommand } from './discord/commands/link.js';
 import { createAuthGuard, type AuthGuard } from './discord/commands/guard.js';
 import { createStatusCommand } from './discord/commands/status.js';
@@ -1305,6 +1310,20 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     createUnlinkCommand({ links, clock, onLog: commandLog }),
     statusCommand,
     createFollowDaysCommand({ links, followers, clock, onLog: commandLog }),
+    createFollowRefreshCommand({
+      // ★ 판정기와 같은 상류·토큰·채널이다. 값을 두 번 적지 않도록 같은 출처에서 읽는다.
+      followers: createFollowerSyncClient({
+        budget: http,
+        baseUrl: file.chzzkbot.baseUrl,
+        token: secrets.LIVE_API_TOKEN,
+        channelId: file.live.channelId,
+        clock,
+        onLog: (message, extra) => {
+          logger.debug(extra ?? {}, message);
+        },
+      }),
+      onLog: commandLog,
+    }),
     createBlacklistCommand({
       blacklist,
       gateway,

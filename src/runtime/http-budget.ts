@@ -40,7 +40,9 @@ export type OutboundCall =
   /** RSS 폴 1건 — 5초 */
   | 'rss-poll'
   /** WebSub 구독·갱신 — 30초 (허브가 느리다. 아래 표 주석 참조) */
-  | 'websub-subscribe';
+  | 'websub-subscribe'
+  /** chzzkbot 팔로워 전수 동기화 요청(`/팔로우갱신`) — 60초. 상류가 끝날 때까지 붙잡는다 */
+  | 'follower-sync';
 
 /** §5.6.1 표의 "회당 타임아웃". **여기서만 정의한다** */
 export const CALL_TIMEOUT_MS: Readonly<Record<OutboundCall, number>> = {
@@ -74,6 +76,17 @@ export const CALL_TIMEOUT_MS: Readonly<Record<OutboundCall, number>> = {
    *   `websub_subscriptions.lease_seconds` 가 비어 있는 것뿐이다.
    */
   'websub-subscribe': 30_000,
+  /**
+   * ★ 상류는 동기화가 **끝난 뒤에** 답한다. 2026-10-04 실측 팔로워 658명 = 치지직 목록
+   *   **14쪽 + 수 조회 1회**이고, 그 호출들은 chzzkbot 의 **공유 레인**(다른 치지직
+   *   호출과 같은 스로틀)을 탄다 — 방송 중에는 그 레인이 붐벼 쪽마다 기다린다.
+   *   3초(`follower-lookup`)로 자르면 성공한 동기화를 매번 "확인 못 함" 으로 적는다.
+   *
+   * ★ 60초 — 상류 권고값(≥60초)이다. 30초로는 붐비는 레인에서 14쪽이 빠듯했다.
+   *   넘겨도 상류 동기화는 계속 돈다(끊기는 것은 우리 대기뿐이다) — 그래서
+   *   명령은 타임아웃을 실패가 아니라 **미확인**으로 적는다.
+   */
+  'follower-sync': 60_000,
 };
 
 /**
@@ -212,7 +225,7 @@ export function createHttpBudget(opts: HttpBudgetOptions = {}): HttpBudget {
     url: string,
     o: RequestOptions,
     budgetMs: number,
-  ): Promise<OutboundResult<T> | { retryAfterMs: number }> {
+  ): Promise<OutboundResult<T> | { retryAfterMs: number; bodyText: string }> {
     const ac = new AbortController();
     const timer = setTimeout(() => {
       ac.abort();
@@ -230,7 +243,11 @@ export function createHttpBudget(opts: HttpBudgetOptions = {}): HttpBudget {
       if (res.status === 429) {
         const ra = res.headers.get('retry-after');
         const secs = ra === null ? NaN : Number(ra);
-        return { retryAfterMs: Number.isFinite(secs) ? secs * 1_000 : -1 };
+        // ★ 본문도 읽어 둔다. 재시도를 다 쓰면(`maxRetries: 0` 포함) 호출부가 받는 것은
+        //   이 본문뿐이다 — 상류 쿨다운 응답의 `retryAfterSec`·`cachedAt` 이 여기 있다.
+        //   못 읽어도 429 는 429 다 — 본문 실패가 결과를 네트워크 오류로 바꾸면 안 된다.
+        const bodyText = await res.text().catch(() => '');
+        return { retryAfterMs: Number.isFinite(secs) ? secs * 1_000 : -1, bodyText };
       }
 
       const text = await res.text();
@@ -297,7 +314,7 @@ export function createHttpBudget(opts: HttpBudgetOptions = {}): HttpBudget {
 
           // ── 429 경로 ──────────────────────────────────────────────
           if (retried >= maxRetries) {
-            return { ok: false, kind: 'http', status: 429, bodyText: '', retried };
+            return { ok: false, kind: 'http', status: 429, bodyText: r.bodyText, retried };
           }
           const backoff = RETRY_BACKOFF_MS[Math.min(retried, RETRY_BACKOFF_MS.length - 1)] ?? 1_000;
           const waitMs = r.retryAfterMs >= 0 ? r.retryAfterMs : backoff;

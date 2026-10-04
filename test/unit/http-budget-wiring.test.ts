@@ -69,6 +69,8 @@ describe('§5.6.1 표 — 호출별 타임아웃이 실제로 걸린다', () => 
     // ★ 응답 시간 분포 실측(2026-09-14): 0.5~20초로 요동치고 20초 초과분은 503.
     //   5초는 5회 중 1회, 15초는 2회만 건진다.
     expect(CALL_TIMEOUT_MS['websub-subscribe']).toBe(30_000);
+    // ★ 상류 전수 동기화는 끝난 뒤에 답한다 — 2026-10-04 실측 658명 = 14쪽 + 수 조회 1회 (상류 권고 ≥60초).
+    expect(CALL_TIMEOUT_MS['follower-sync']).toBe(60_000);
   });
 });
 
@@ -193,6 +195,26 @@ describe('429 — Retry-After 가 백오프를 이긴다', () => {
     const r = await b.request('rss-poll', 'http://x/');
     expect(!r.ok && r.kind === 'http' && r.status).toBe(429);
     expect(slept).toEqual([1_000, 2_000, 4_000]);
+  });
+
+  it('★ 재시도를 다 쓰면 429 본문을 그대로 돌려준다 — 상류 쿨다운 사유가 거기 있다', async () => {
+    const body = JSON.stringify({ error: 'cooldown', retryAfterSec: 42 });
+    const rl = ((): Promise<Response> =>
+      Promise.resolve(new Response(body, { status: 429, headers: { 'retry-after': '42' } }))) as unknown as typeof fetch;
+    const b = createHttpBudget({
+      fetchImpl: rl,
+      sleep: (): Promise<void> => Promise.reject(new Error('자면 안 된다')),
+    });
+    const r = await b.request('follower-sync', 'http://x/', { method: 'POST', maxRetries: 0 });
+    expect(r).toEqual({ ok: false, kind: 'http', status: 429, bodyText: body, retried: 0 });
+  });
+
+  it('429 본문을 못 읽어도 429 는 429 다 — bodyText 만 비어 나온다', async () => {
+    const res = new Response('x', { status: 429 });
+    Object.defineProperty(res, 'text', { value: () => Promise.reject(new Error('stream broke')) });
+    const b = createHttpBudget({ fetchImpl: (() => Promise.resolve(res)) as unknown as typeof fetch });
+    const r = await b.request('follower-sync', 'http://x/', { method: 'POST', maxRetries: 0 });
+    expect(r).toEqual({ ok: false, kind: 'http', status: 429, bodyText: '', retried: 0 });
   });
 
   it('Retry-After 가 숫자가 아니면 백오프로 되돌아간다', async () => {
