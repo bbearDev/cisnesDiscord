@@ -30,7 +30,15 @@ export type StuckDomain =
   | 'confirmed-stuck'
   /** AC-P2 — `GET /api/live` 의 `unknown` 연속. **연속횟수** 판정 */
   | 'live-api-unknown'
-  /** AC-P4 — RSS 폴 연속 실패. **연속횟수** 판정 */
+  /**
+   * AC-P4 — RSS 폴 실패 지속. **지속시간** 판정.
+   *
+   * ★ 예전에는 연속횟수(5회)였다. 유튜브 피드가 간헐 404/500 을 내는 것이 상류의
+   *   알려진 문제(2025-12~)라 5회 규칙은 12일간 39번 울리고 놓친 공지는 0건이었다.
+   *   또 폴 간격이 백오프(300→600→900초)로 바뀌므로 "N회" 는 벽시계 시간이 일정하지
+   *   않다 — 중요한 것은 *폴백이 얼마나 오래 눈이 멀었는가* 다. 근거 전문은
+   *   `config/schema.ts` 의 `rssFailThresholdMin`.
+   */
   | 'rss'
   /** AC-P7 — WebSub 갱신 연속 실패. **연속횟수** 판정 */
   | 'websub-renew'
@@ -63,8 +71,8 @@ export interface StuckWatchThresholds {
   confirmedStuckMs: number;
   /** AC-P2 기본 5회 (`live.pollFailThresholdCount`) */
   pollFailCount: number;
-  /** AC-P4 기본 5회 (`youtube.rssFailThresholdCount`) */
-  rssFailCount: number;
+  /** AC-P4 기본 360분 (`youtube.rssFailThresholdMin`) */
+  rssFailMs: number;
   /** AC-P7 기본 3회 (`youtube.renewFailThresholdCount`) */
   renewFailCount: number;
   /** §5.2 배선만 — 값은 쓰이되 발화하지 않는다 */
@@ -85,7 +93,9 @@ export function buildSpecs(t: StuckWatchThresholds): Readonly<Record<StuckDomain
       threshold: t.pollFailCount,
       armed: true,
     },
-    rss: { kind: 'rss_fail', mode: 'streak', threshold: t.rssFailCount, armed: true },
+    // ★ duration — 위 `'rss'` 도메인 주석 참조. 첫 실패 시각부터 재므로 백오프로
+    //   폴 간격이 늘어나도 판정 시간이 흔들리지 않는다.
+    rss: { kind: 'rss_fail', mode: 'duration', threshold: t.rssFailMs, armed: true },
     'websub-renew': {
       kind: 'websub_lease',
       mode: 'streak',

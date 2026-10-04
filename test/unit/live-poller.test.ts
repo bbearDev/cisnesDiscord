@@ -165,7 +165,7 @@ function build(initial: LiveApiFetchResult): void {
     specs: buildSpecs({
       confirmedStuckMs: CONFIRMED_STUCK_MS,
       pollFailCount: POLL_FAIL_COUNT,
-      rssFailCount: 5,
+      rssFailMs: 360 * 60_000,
       renewFailCount: 3,
       followerStaleCount: 3,
     }),

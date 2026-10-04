@@ -66,7 +66,7 @@ function build(http: TextClient) {
       specs: buildSpecs({
         confirmedStuckMs: 5 * 60_000,
         pollFailCount: 5,
-        rssFailCount: 5,
+        rssFailMs: 360 * 60_000,
         renewFailCount: 3,
         followerStaleCount: 3,
       }),

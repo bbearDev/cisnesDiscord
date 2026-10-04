@@ -64,6 +64,15 @@ const CALLBACK = 'https://bot.test/websub';
 const UPLOAD_CHANNEL = 'discord-upload-channel';
 const T0 = Date.parse('2026-09-07T00:00:00.000Z');
 
+/**
+ * ★★ AC-P4 는 **지속시간** 판정이다 — 마지막 성공 뒤 첫 실패부터 360분 (`rssFailThresholdMin`).
+ *
+ *   예전 5회 연속 규칙은 유튜브 피드의 간헐 404/500(상류 문제, 2025-12~)에 12일간 39번
+ *   울리고 놓친 공지는 0건이었다. 또 백오프로 폴 간격이 300→900초로 변하므로 "N회" 는
+ *   벽시계 시간이 일정하지 않다. 그래서 여기서는 **횟수가 아니라 시계를 돌려** 판정한다.
+ */
+const RSS_FAIL_MS = 360 * 60_000;
+
 /** 엔트리가 없는 정상 피드 — AC-26 시딩을 "공지 0건" 으로 통과시키는 데 쓴다 */
 const EMPTY_FEED = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
@@ -271,7 +280,7 @@ function build(opts: BuildOptions = {}): Harness {
     specs: buildSpecs({
       confirmedStuckMs: 5 * 60_000,
       pollFailCount: 5,
-      rssFailCount: 5,
+      rssFailMs: RSS_FAIL_MS,
       renewFailCount: 3,
       followerStaleCount: 3,
     }),
@@ -655,60 +664,100 @@ describe('AC-25 — WebSub 이 죽어도 누락이 없다', () => {
 //  AC-P4 — RSS 폴러 건강도
 // ══════════════════════════════════════════════════════════════════
 
-describe('AC-P4 — RSS 연속 실패 경보', () => {
-  it('★★ 4회 연속 실패 → 경보 0건 / 5회째 → 정확히 1건', async () => {
+describe('AC-P4 — RSS 실패 지속 경보', () => {
+  /** 실패 폴 1회 후 `ms` 만큼 시계를 돌린다 */
+  const failFor = async (h: Harness, ms: number, stepMs = 5 * 60_000): Promise<void> => {
+    await h.poller.pollOnce(CH);
+    for (let t = 0; t < ms; t += stepMs) {
+      h.clock.advance(Math.min(stepMs, ms - t));
+      await h.poller.pollOnce(CH);
+    }
+  };
+
+  it('★★ 359분 실패 → 경보 0건 / 360분째 → 정확히 1건', async () => {
     const h = harness();
     await h.seed();
     h.net.feeds.set(CH, undefined); // 네트워크 오류
 
-    for (let i = 0; i < 4; i++) await h.poller.pollOnce(CH);
+    await failFor(h, RSS_FAIL_MS - 60_000);
     expect(h.alerts).toHaveLength(0);
-    expect(h.poller.failStreaks()).toEqual([{ channelId: CH, streak: 4 }]);
+    expect(h.poller.failDurations()).toEqual([{ channelId: CH, ms: RSS_FAIL_MS - 60_000 }]);
 
+    h.clock.advance(60_000);
     await h.poller.pollOnce(CH);
     expect(h.alerts).toHaveLength(1);
     expect(h.alerts[0]).toMatchObject({
       domain: 'rss',
       kind: 'rss_fail',
+      mode: 'duration',
       scopeKey: CH,
-      value: 5,
-      threshold: 5,
+      value: RSS_FAIL_MS,
+      threshold: RSS_FAIL_MS,
     });
+  });
+
+  it('★★ 횟수는 무관하다 — 짧은 시간에 몇 번을 실패해도 360분 전에는 울리지 않는다', async () => {
+    // 옛 5회 규칙이 오탐 39건을 낸 바로 그 모양이다.
+    const h = harness();
+    await h.seed();
+    h.net.feeds.set(CH, undefined);
+    await failFor(h, 30 * 60_000, 60_000); // 31회 실패
+    expect(h.alerts).toHaveLength(0);
   });
 
   it('★ 임계를 넘긴 뒤에도 에피소드당 1건이다 (장애 중 도배 금지)', async () => {
     const h = harness();
     await h.seed();
     h.net.feeds.set(CH, undefined);
-    for (let i = 0; i < 20; i++) await h.poller.pollOnce(CH);
+    await failFor(h, 2 * RSS_FAIL_MS);
     expect(h.alerts).toHaveLength(1);
   });
 
-  it('★★ 중간에 1회라도 성공하면 카운터가 리셋된다', async () => {
+  it('★★ 중간에 1회라도 성공하면 지속시간이 리셋된다', async () => {
     const h = harness();
     await h.seed();
 
     h.net.feeds.set(CH, undefined);
-    for (let i = 0; i < 4; i++) await h.poller.pollOnce(CH);
-    expect(h.poller.failStreaks()[0]?.streak).toBe(4);
+    await failFor(h, RSS_FAIL_MS - 5 * 60_000);
+    expect(h.poller.failDurations()[0]?.ms).toBe(RSS_FAIL_MS - 5 * 60_000);
 
+    h.clock.advance(5 * 60_000);
     h.net.feeds.set(CH, EMPTY_FEED);
     await h.poller.pollOnce(CH);
-    expect(h.poller.failStreaks()[0]?.streak).toBe(0);
+    expect(h.poller.failDurations()[0]?.ms).toBe(0);
 
-    // 리셋됐으므로 다시 4회로는 경보가 없다.
+    // ★ 리셋됐으므로 누적(355 + 355분)으로는 울리지 않는다 — 새 에피소드는 0 부터 잰다.
+    h.clock.advance(5 * 60_000);
     h.net.feeds.set(CH, undefined);
-    for (let i = 0; i < 4; i++) await h.poller.pollOnce(CH);
+    await failFor(h, RSS_FAIL_MS - 5 * 60_000);
     expect(h.alerts).toHaveLength(0);
+    h.clock.advance(5 * 60_000);
     await h.poller.pollOnce(CH);
     expect(h.alerts).toHaveLength(1);
+  });
+
+  it('★ 리셋 뒤 새 에피소드는 다시 1건을 낸다 (에피소드당 1건이지 평생 1건이 아니다)', async () => {
+    const h = harness();
+    await h.seed();
+    h.net.feeds.set(CH, undefined);
+    await failFor(h, RSS_FAIL_MS);
+    expect(h.alerts).toHaveLength(1);
+
+    h.clock.advance(5 * 60_000);
+    h.net.feeds.set(CH, EMPTY_FEED);
+    await h.poller.pollOnce(CH);
+
+    h.clock.advance(5 * 60_000);
+    h.net.feeds.set(CH, undefined);
+    await failFor(h, RSS_FAIL_MS);
+    expect(h.alerts).toHaveLength(2);
   });
 
   it('★ 파싱 실패도 폴 실패로 센다', async () => {
     const h = harness();
     await h.seed();
     h.net.feeds.set(CH, fixture('feed-broken.xml'));
-    for (let i = 0; i < 5; i++) await h.poller.pollOnce(CH);
+    await failFor(h, RSS_FAIL_MS);
     expect(h.alerts).toHaveLength(1);
     expect(h.alerts[0]?.kind).toBe('rss_fail');
   });
@@ -718,9 +767,10 @@ describe('AC-P4 — RSS 연속 실패 경보', () => {
     await h.seed();
     h.discord.failAlways({ kind: 'server' });
     h.net.feeds.set(CH, fixture('feed-mixed.xml'));
-    for (let i = 0; i < 10; i++) await h.poller.pollOnce(CH);
+    // ★ 시계를 돌려야 공허하지 않다 — 시간이 안 흐르면 실패로 셌어도 지속시간이 0 이다.
+    await failFor(h, RSS_FAIL_MS);
     expect(h.alerts.filter((a) => a.kind === 'rss_fail')).toHaveLength(0);
-    expect(h.poller.failStreaks()[0]?.streak).toBe(0);
+    expect(h.poller.failDurations()[0]?.ms).toBe(0);
   });
 });
 
@@ -831,7 +881,7 @@ describe('AC-20 — 구독과 리스', () => {
         specs: buildSpecs({
           confirmedStuckMs: 1,
           pollFailCount: 5,
-          rssFailCount: 5,
+          rssFailMs: RSS_FAIL_MS,
           renewFailCount: 3,
           followerStaleCount: 3,
         }),
@@ -993,7 +1043,7 @@ describe('AC-P7 — 갱신 연속 실패', () => {
 
     h.net.hubAccepts = false;
     await h.websub.sweep();
-    // RSS 4 + 갱신 1 = 5 가 아니다. 두 도메인은 서로 격리된다.
+    // RSS 실패 4건이 갱신 스트릭에 섞이면 4 + 1 ≥ 3 으로 울린다. 두 도메인은 서로 격리된다.
     expect(h.alerts).toHaveLength(0);
   });
 });
@@ -1273,20 +1323,20 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     const h = harness();
     h.net.feedStatus.set(CH, 404);
     await h.poller.start();
-    expect(h.poller.failStreaks()[0]?.streak, '첫 폴이 실패로 세어지지 않았다').toBe(1);
+    expect(h.net.feedHits, '첫 폴이 돌지 않았다').toBe(1);
 
     h.clock.advance(60_000);
     await flush();
-    expect(h.poller.failStreaks()[0]?.streak, '60초 뒤 2회차가 돌지 않았다').toBe(2);
+    expect(h.net.feedHits, '60초 뒤 2회차가 돌지 않았다').toBe(2);
 
     // ★ 반공허 가드 — 여기가 백오프의 전부다. 없으면 60초에 또 돈다.
     h.clock.advance(60_000);
     await flush();
-    expect(h.poller.failStreaks()[0]?.streak, '60초 만에 또 돌았다 — 백오프가 없다').toBe(2);
+    expect(h.net.feedHits, '60초 만에 또 돌았다 — 백오프가 없다').toBe(2);
 
     h.clock.advance(60_000); // 2회차로부터 누적 120초
     await flush();
-    expect(h.poller.failStreaks()[0]?.streak, '120초 뒤 3회차가 돌지 않았다').toBe(3);
+    expect(h.net.feedHits, '120초 뒤 3회차가 돌지 않았다').toBe(3);
 
     h.poller.stop();
   });
@@ -1297,7 +1347,7 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     await h.poller.start();
     h.clock.advance(60_000);
     await flush();
-    expect(h.poller.failStreaks()[0]?.streak).toBe(2); // 다음은 120초 뒤
+    expect(h.net.feedHits).toBe(2); // 다음은 120초 뒤
 
     // 상류가 회복된다 — ★ **엔트리가 있는** 피드라야 회복이다.
     //   빈 피드(200 · 0건)는 우리가 조여졌다는 신호이므로 성공으로 세지 않는다.
@@ -1305,13 +1355,14 @@ describe('구독 → 검증 → 푸시 전 구간', () => {
     h.net.feeds.set(CH, fixture('push-single.xml'));
     h.clock.advance(120_000);
     await flush();
-    expect(h.poller.failStreaks()[0]?.streak, '성공이 연속 실패를 리셋하지 않았다').toBe(0);
+    expect(h.net.feedHits, '120초 뒤 3회차가 돌지 않았다').toBe(3);
+    expect(h.poller.failDurations()[0]?.ms, '성공이 실패 지속을 리셋하지 않았다').toBe(0);
 
     // ★ 이제 60초 만에 다시 돌아야 한다 — 120초로 남아 있으면 안 된다
     h.net.feedStatus.set(CH, 404);
     h.clock.advance(60_000);
     await flush();
-    expect(h.poller.failStreaks()[0]?.streak, '성공 후에도 간격이 늘어난 채였다').toBe(1);
+    expect(h.net.feedHits, '성공 후에도 간격이 늘어난 채였다').toBe(4);
 
     h.poller.stop();
   });
@@ -1464,9 +1515,14 @@ describe('★★ 빈 피드는 "새 영상 없음" 이 아니다 — 조용히 �
     const h = harness();
     h.net.feeds.set(CH, EMPTY_FEED);
 
-    for (let i = 0; i < 6; i++) await h.poller.pollOnce(CH);
+    // ★ 폴 사이에 시계를 돌린다 — 안 돌리면 실패로 셌어도 지속시간이 0 이라 공허하다.
+    await h.poller.pollOnce(CH);
+    for (let i = 0; i < 6; i++) {
+      h.clock.advance(RSS_FAIL_MS / 5);
+      await h.poller.pollOnce(CH);
+    }
     expect(h.alerts, '빈 피드가 rss_fail 경보를 울렸다').toHaveLength(0);
-    expect(h.poller.failStreaks()[0]?.streak).toBe(0);
+    expect(h.poller.failDurations()[0]?.ms).toBe(0);
   });
 });
 

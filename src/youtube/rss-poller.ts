@@ -14,8 +14,9 @@ import type { UploadFlow, UploadFlowResult } from './upload-flow.js';
  *   WebSub 이 죽은 동안 발견된 영상은 1분을 넘겨 공지된다 — **설계된 동작**이고,
  *   폴백 발동률(`detected_via='rss'`)을 WebSub 건강도 지표로 쓴다.
  *
- * ★★ **연속 실패를 스스로 세지 않는다** (AC-P4). 폴 결과를 그대로
- *   `live/stuck-watch.ts` 의 `'rss'` 도메인에 넘긴다. 계획 §S6 표가
+ * ★★ **실패 지속을 스스로 재지 않는다** (AC-P4). 폴 결과를 그대로
+ *   `live/stuck-watch.ts` 의 `'rss'` 도메인에 넘기고, 판정(실패가 `rssFailThresholdMin`
+ *   이상 **지속**되면 경보)은 거기서 한다. 계획 §S6 표가
  *   *"폴 결과(성공/실패)를 stuck-watch 에 넘길 뿐 스트릭을 스스로 세지 않는다"*
  *   라고 못 박았고, 카운터를 폴 루프에 흩는 것이 §10 시나리오 1 완화책의
  *   정확한 위반 형태다.
@@ -114,8 +115,13 @@ export interface RssPoller {
   pollAll(): Promise<RssPollOutcome[]>;
   /** 주기 폴 시작. 즉시 1회 돌고 그 뒤 `pollSec` 마다 */
   start(): Promise<RssPollOutcome[]>;
-  /** 지표 `youtube_rss_fail_streak{channel}` */
-  failStreaks(): { channelId: string; streak: number }[];
+  /**
+   * 채널별 실패 지속 시간(밀리초) — 지표 `youtube_rss_fail_duration_sec{channel}` 의 원천.
+   *
+   * ★ 횟수가 아니다. `'rss'` 도메인은 지속시간 판정이라 이 값은 **첫 실패부터 흐른 시간**이고,
+   *   성공하면 0 이다. 폴이 몇 번 돌았는지는 이 값으로 알 수 없다(백오프로 간격이 변한다).
+   */
+  failDurations(): { channelId: string; ms: number }[];
   stop(): void;
 }
 
@@ -277,11 +283,11 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
       return first;
     },
 
-    failStreaks(): { channelId: string; streak: number }[] {
+    failDurations(): { channelId: string; ms: number }[] {
       const now = clock.now();
       return [...known.keys()].map((channelId) => ({
         channelId,
-        streak: stuck.value('rss', channelId, now),
+        ms: stuck.value('rss', channelId, now),
       }));
     },
 

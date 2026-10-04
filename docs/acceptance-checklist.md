@@ -102,8 +102,8 @@
   **검증**: `e2e` — 조회 API 를 연결 실패로 고정 → 5회째에 경보 1건, 그동안 공지 0개. 보조로 `observability`(`live_api_unknown_streak` — `/api/live` 가 유일한 아웃바운드라 이 값이 곧 통합 건강도).
 - [ ] **AC-P3** 부하가 걸려도 (a) 디스코드 게이트웨이 재연결이 늘지 않고 (b) 아웃바운드 in-flight 가 `http.maxConcurrent`(기본 **8**) 를 넘지 않으며 (c) 각 인증이 OAuth 왕복 예산(10초) 안에 종결된다.
   **검증**: `e2e` — FM1 부하 격리(동시 인증 10명 + 가짜 상류 300ms 지연 → 게이트웨이 재연결 0건 / in-flight ≤ 8 / 왕복 예산 내 종결). 관측 수단은 `fake-discord.ts` 의 `reconnectCount` 로 못 박는다. 보조로 `observability`(`discord_gateway_reconnects`).
-- [ ] **AC-P4** RSS 폴이 채널 단위로 `youtube.rssFailThresholdCount`(기본 **5회**) 연속 실패하면 운영 채널에 경보한다. 중간에 1회라도 성공하면 카운터를 리셋한다.
-  **검증**: `e2e` — RSS 5회 연속 실패 → 경보 1건, 4회에서는 0건, 중간 성공 시 카운터 리셋. 보조로 `unit`(`stuck-watch` 경계), `observability`(`youtube_rss_fail_streak{channel}`).
+- [ ] **AC-P4** RSS 폴이 채널 단위로 마지막 성공 뒤 `youtube.rssFailThresholdMin`(기본 **360분**) 이상 계속 실패하면 운영 채널에 경보한다(에피소드당 1건). 중간에 1회라도 성공하면 지속시간을 리셋한다. (2026-10-04 에 "5회 연속"(`rssFailThresholdCount`)에서 바꿨다 — 유튜브 피드의 간헐 404/500 은 상류의 알려진 문제(2025-12~)라 5회 규칙은 12일간 39번 울리고 놓친 공지는 0건이었다. 백오프로 폴 간격이 300→900초로 변해 "N회" 의 벽시계 길이도 일정하지 않다.)
+  **검증**: `e2e` — RSS 359분 실패 → 경보 0건, 360분 → 1건, 그 뒤로는 에피소드당 1건, 중간 성공 시 리셋, 파싱 실패는 세고 발송 실패는 세지 않는다. 보조로 `unit`(`stuck-watch` 경계: 359:59.999→무경보/360:00→경보), `observability`(`youtube_rss_fail_duration_sec{channel}`).
 - [ ] **AC-P5** WebSub 푸시의 `X-Hub-Signature` 검증 실패는 계약대로 조용히 202 로 답하되, `websub_signature_failures{channel}` 지표를 반드시 증가시킨다.
   **검증**: `e2e` — 잘못된 시크릿으로 서명한 푸시 → 202 응답 + 공지 0개 + 지표 증가 1. 보조로 `observability`(`websub_signature_failures{channel}` — "시크릿 불일치"와 "허브가 안 보냄"을 구분하는 유일한 축).
 - [ ] **AC-P6** 폴링이 `announce` 를 냈고, 그로부터 `live.webhookSilenceGraceMin`(기본 **10분** = 재시도 창 7분 + 여유 3분) 이 지난 뒤에도 같은 `liveHash` 에 대해 웹훅을 받은 기록이 원장에 없으면 운영 채널에 1건 기록한다.

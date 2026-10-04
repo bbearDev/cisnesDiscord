@@ -734,7 +734,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
     specs: buildSpecs({
       confirmedStuckMs: file.live.confirmedStuckMin * 60_000,
       pollFailCount: file.live.pollFailThresholdCount,
-      rssFailCount: file.youtube.rssFailThresholdCount,
+      rssFailMs: file.youtube.rssFailThresholdMin * 60_000,
       renewFailCount: file.youtube.renewFailThresholdCount,
       followerStaleCount: FOLLOWER_STALE_STREAK_COUNT,
     }),
@@ -1585,12 +1585,15 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
    * ★ 도메인 지식(어느 스트릭이 어느 지표인가)이 조립부에 있는 이유:
    *   `stuck-watch` 의 도메인 이름이 바뀌면 **여기서 컴파일이 깨진다.**
    *   레지스트리 안에 문자열로 두면 통과한 채 조용히 0 을 돌려준다.
+   *
+   * ★ `divisor` 는 duration 도메인(밀리초)을 `_sec` 지표로 접을 때만 쓴다.
+   *   streak 도메인(`websub-renew`)은 기본값 1 — 횟수를 나누면 안 된다.
    */
-  const streakByChannel = (domain: StuckDomain): Record<string, number> => {
+  const streakByChannel = (domain: StuckDomain, divisor = 1): Record<string, number> => {
     const at = clock.now();
     const out: Record<string, number> = {};
     for (const e of stuckWatch.snapshot(at)) {
-      if (e.domain === domain) out[e.scopeKey] = e.value;
+      if (e.domain === domain) out[e.scopeKey] = e.value / divisor;
     }
     return out;
   };
@@ -1618,7 +1621,9 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<App> {
       live_unconfirmed_duration_sec: () =>
         stuckWatch.value('confirmed-stuck', file.live.channelId, clock.now()) / 1_000,
       websub_renew_fail_streak: () => streakByChannel('websub-renew'),
-      youtube_rss_fail_streak: () => streakByChannel('rss'),
+      // ★ `rss` 도 duration 도메인이라 밀리초다 — 위 `live_unconfirmed_duration_sec` 와
+      //   같은 이유로 초로 접는다.
+      youtube_rss_fail_duration_sec: () => streakByChannel('rss', 1_000),
       websub_lease_ratio: () =>
         Object.fromEntries(websub.leaseRatios().map((r) => [r.channelId, r.ratio])),
     },

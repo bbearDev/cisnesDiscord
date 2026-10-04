@@ -365,17 +365,21 @@ describe('§9.4 — stuck-watch 에 사는 값들', () => {
     expect(app.stuckWatch.value('confirmed-stuck', SIS, clock.now())).toBe(180_000);
   });
 
-  it('★ websub_renew_fail_streak{channel} · youtube_rss_fail_streak{channel} 이 채널별로 갈린다', async () => {
+  it('★ websub_renew_fail_streak{channel} · youtube_rss_fail_duration_sec{channel} 이 채널별로 갈린다', async () => {
     const { app, clock } = await boot();
 
     app.stuckWatch.observe('websub-renew', YT_CHANNEL, true, clock.now());
     app.stuckWatch.observe('rss', YT_CHANNEL, true, clock.now());
+    clock.advance(90_000);
     app.stuckWatch.observe('rss', YT_CHANNEL, true, clock.now());
 
+    // ★ 갱신은 streak 이라 횟수 그대로다 — 나누면 안 된다.
     expect(gaugeOf(app.metricsRegistry, 'websub_renew_fail_streak').byLabel[YT_CHANNEL]).toBe(1);
-    expect(gaugeOf(app.metricsRegistry, 'youtube_rss_fail_streak').byLabel[YT_CHANNEL]).toBe(2);
+    // ★★ rss 는 duration 이라 stuck-watch 는 ms 로 센다. 이름이 `_sec` 이므로 초로 접혀야 한다.
+    expect(gaugeOf(app.metricsRegistry, 'youtube_rss_fail_duration_sec').byLabel[YT_CHANNEL]).toBe(90);
+    expect(app.stuckWatch.value('rss', YT_CHANNEL, clock.now())).toBe(90_000);
     // 한 채널의 실패가 다른 채널을 덮지 않는다
-    expect(gaugeOf(app.metricsRegistry, 'youtube_rss_fail_streak').byLabel['UCother']).toBeUndefined();
+    expect(gaugeOf(app.metricsRegistry, 'youtube_rss_fail_duration_sec').byLabel['UCother']).toBeUndefined();
   });
 
   it('★ websub_lease_ratio{channel} — 리스 잔량이 비율로 보인다 (AC-P7)', async () => {
@@ -564,14 +568,14 @@ describe('레지스트리 — 값을 접는 규칙', () => {
     const r = createMetricsRegistry({
       gauges: {
         websub_lease_ratio: () => ({ a: 0.1, b: 0.9 }),
-        youtube_rss_fail_streak: () => ({ only: 3 }),
+        youtube_rss_fail_duration_sec: () => ({ only: 3 }),
       },
     });
-    // 잔량은 최솟값이 나쁘고 연속 실패는 최댓값이 나쁘다 — 하나로 접으면 한쪽이 틀린다
+    // 잔량은 최솟값이 나쁘고 실패 지속은 최댓값이 나쁘다 — 하나로 접으면 한쪽이 틀린다
     expect(gaugeOf(r, 'websub_lease_ratio').value).toBeUndefined();
     expect(gaugeOf(r, 'websub_lease_ratio').byLabel).toEqual({ a: 0.1, b: 0.9 });
     // 라벨이 하나뿐이면 그 값이 곧 답이다
-    expect(gaugeOf(r, 'youtube_rss_fail_streak').value).toBe(3);
+    expect(gaugeOf(r, 'youtube_rss_fail_duration_sec').value).toBe(3);
   });
 
   it('★ 읽기 함수가 던져도 스냅샷은 살아 있다 (Principle 2)', () => {
