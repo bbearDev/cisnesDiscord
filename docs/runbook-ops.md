@@ -443,6 +443,12 @@ sqlite3 data/cisnes.db "SELECT gate_channel_id FROM guild_config; SELECT value F
 > "5회" 는 상황마다 다른 시간이었다. 그래서 지금은 *폴백이 얼마나 오래 눈이 멀었는가* 를 본다.
 > 지표는 `youtube_rss_fail_duration_sec{channel}` (예전 `youtube_rss_fail_streak` 대체).
 >
+> ⚠️ **재기동하면 지속시간이 0 부터 다시 잰다.** `stuck-watch` 는 메모리에만 있다. 360분 창이라
+> 체감이 크다 — 실패 5시간째에 배포하면 경보는 그로부터 6시간 뒤에야 울린다. 재기동 직후
+> RSS 상태가 궁금하면 경보를 기다리지 말고 `rss 폴 실패` 로그와 위 curl 로 직접 본다.
+> 외부 대시보드·알림 규칙이 옛 지표 이름(`youtube_rss_fail_streak`)을 보고 있었다면 함께 바꾼다
+> (단위도 횟수 → 초).
+>
 > ⚠️ **설정 키가 바뀌었다: `youtube.rssFailThresholdCount` → `youtube.rssFailThresholdMin`** (분 단위).
 > 스키마가 모르는 키를 조용히 무시하므로 옛 키를 남겨 두면 **에러 없이 기본 360분이 쓰인다.**
 > 값을 바꿔 두었다면 새 이름으로 옮길 것.

@@ -205,7 +205,7 @@ export function createRssPoller(opts: RssPollerOptions): RssPoller {
      *   알 수 없다.
      *
      * ★★ `stuck-watch` 를 **쓰지 않는다.** 그쪽은 백오프와 경보 임계를 같이 굴리는데,
-     *   경보까지 켜지면 ① 영상이 하나도 없는 채널이 25분마다 영구 오탐이 되고
+     *   경보까지 켜지면 ① 영상이 하나도 없는 채널이 임계(`rssFailThresholdMin`)마다 영구 오탐이 되고
      *   ② 전용 종류(`rss_empty`)는 `alert_state.alert_kind` CHECK 를 고쳐야 해
      *   마이그레이션 002 대상이다(런북 §8-a). `rss_fail` 재사용은 같은 (scope, kind)
      *   디바운스를 공유해 **진짜 가져오기 실패를 빈 피드가 가린다.**
