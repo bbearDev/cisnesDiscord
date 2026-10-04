@@ -99,6 +99,12 @@ function replyFor(r: FollowerSyncResult): string {
         '상류(chzzkbot)에 우리 치지직 채널이 등록돼 있지 않습니다.',
         'chzzkbot 설정의 채널 목록과 `live.channelId` 가 같은지 확인해 주십시오.',
       ].join('\n');
+    case 'shutting-down':
+      return [
+        '상류(chzzkbot)가 **재기동 중**이라 응답이 끊겼습니다.',
+        '상류는 기동할 때 팔로워 전수 동기화를 한 번 돌므로 대개 다시 누를 필요가 없습니다 —',
+        '1~2분 뒤 `/팔로우 대상:<연동된 멤버>` 로 스냅샷 시각이 바뀌었는지 확인해 주십시오.',
+      ].join('\n');
     case 'unreachable':
       // ★ 닿지 않았으면 동기화도 시작되지 않았다 — "진행 중일 수 있다" 고 쓰지 않는다.
       return [
@@ -109,7 +115,7 @@ function replyFor(r: FollowerSyncResult): string {
       return [
         `결과를 **확인하지 못했습니다** — ${r.detail}.`,
         '실패했다는 뜻이 아닙니다. 상류 동기화는 계속 진행 중일 수 있습니다 —',
-        '1분쯤 뒤 `/팔로우` 로 스냅샷 시각이 바뀌었는지 확인해 주십시오.',
+        '1분쯤 뒤 `/팔로우 대상:<연동된 멤버>` 로 스냅샷 시각이 바뀌었는지 확인해 주십시오.',
       ].join('\n');
   }
 }

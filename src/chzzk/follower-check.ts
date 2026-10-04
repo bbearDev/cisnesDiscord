@@ -486,6 +486,14 @@ export type FollowerSyncResult =
   /** 404 `channel_not_found` — 상류에 우리 채널이 등록돼 있지 않다 */
   | { outcome: 'channel-not-found' }
   /**
+   * 503 `shutting_down` — 상류가 재기동 중이라 기다리던 응답을 끊었다.
+   *
+   * ★ `unconfirmed` 와 가른다. 이 경우는 원인이 확정이고 할 일도 다르다 — 상류는
+   *   기동할 때 전수 동기화를 한 번 돌므로 **다시 누를 필요가 대개 없다.**
+   *   본문의 `error` 가 맞을 때만 이 갈래다 (502·429 와 같은 규칙).
+   */
+  | { outcome: 'shutting-down' }
+  /**
    * 네트워크 오류(연결 거부·DNS) — 요청이 상류에 **닿지 않았다.**
    *
    * ★ `unconfirmed` 와 가른다. 닿지 않았으면 동기화도 시작되지 않았으므로
@@ -663,6 +671,12 @@ export function createFollowerSyncClient(opts: FollowerSyncOptions): FollowerSyn
       }
       case 405:
         return { outcome: 'unsupported', status: 405 };
+      case 503: {
+        const p = ErrorBody.safeParse(body);
+        return p.success && p.data.error === 'shutting_down'
+          ? { outcome: 'shutting-down' }
+          : { outcome: 'unconfirmed', detail: 'HTTP 503' };
+      }
       default:
         return { outcome: 'unconfirmed', detail: `HTTP ${String(res.status)}` };
     }

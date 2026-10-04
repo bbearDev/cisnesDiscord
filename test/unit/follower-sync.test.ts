@@ -225,6 +225,18 @@ describe('응답 갈래', () => {
     expect(await client.requestSync()).toEqual({ outcome: 'unreachable', detail: 'ECONNREFUSED' });
   });
 
+  it('★ 503 shutting_down — 상류가 재기동 중이라 끊었다 (원인 확정이라 미확인과 가른다)', async () => {
+    const { client } = make(respond(503, { error: 'shutting_down' }));
+    expect(await client.requestSync()).toEqual({ outcome: 'shutting-down' });
+  });
+
+  it('상류 모양이 아닌 503(HTML · 다른 본문)은 미확인이다', async () => {
+    for (const body of ['<html>Service Unavailable</html>', { error: 'maintenance' }]) {
+      const { client } = make(respond(503, body));
+      expect(await client.requestSync()).toEqual({ outcome: 'unconfirmed', detail: 'HTTP 503' });
+    }
+  });
+
   it('그 밖의 상태(500)는 미확인이다', async () => {
     const { client } = make(respond(500, { error: 'internal' }));
     expect(await client.requestSync()).toEqual({ outcome: 'unconfirmed', detail: 'HTTP 500' });

@@ -148,7 +148,21 @@ describe('응답 갈래', () => {
     expect(r.content).toContain('제한 시간 초과');
     expect(r.content).toContain('실패했다는 뜻이 아닙니다');
     expect(r.content).toContain('계속 진행 중일 수 있습니다');
+    // ★ `/팔로우` 는 `대상` 이 필수다 — 그대로 따라 치면 디스코드가 막는다.
+    expect(r.content).toContain('/팔로우 대상:<연동된 멤버>');
     expect(m.logs[0]?.extra).toEqual({ by: 'op', outcome: 'unconfirmed', detail: '제한 시간 초과' });
+  });
+});
+
+describe('상류 재기동', () => {
+  it('★ 503 shutting_down — 재기동 중이라 끊겼고, 상류가 기동 때 전수를 돌므로 대개 다시 누를 필요가 없다', async () => {
+    const m = make({ outcome: 'shutting-down' });
+    const r = await m.cmd.execute(OPERATOR);
+    expect(r.ephemeral).toBe(true);
+    expect(r.content).toContain('재기동 중');
+    expect(r.content).toContain('다시 누를 필요가 없습니다');
+    expect(r.content).toContain('/팔로우 대상:<연동된 멤버>');
+    expect(m.logs[0]?.extra).toEqual({ by: 'op', outcome: 'shutting-down' });
   });
 });
 
