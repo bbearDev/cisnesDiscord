@@ -426,13 +426,32 @@ sqlite3 data/cisnes.db "SELECT gate_channel_id FROM guild_config; SELECT value F
 |---|---|---|
 | **AC-P1** `confirmed` 고착 5분 | 방송 중인데 chzzkbot 스캔이 `openDate` 를 못 붙였다. **웹훅이 영영 안 나간다** | `journalctl --user -u chzzkbot \| grep '방송을 인식했습니다'` · 429 여부 |
 | **AC-P2** `unknown` 5회 연속 | `/api/live` 가 조용히 죽었다 (chzzkbot 다운·토큰 무효·경로 변경) | §2-4 의 curl. 401 이면 `LIVE_API_TOKEN`, 404 면 `WEB_PORT`/`api.enabled` |
-| **AC-P4** RSS 5회 연속 실패 | 이그레스·DNS·유튜브 도달 불가 | `curl -sS 'https://www.youtube.com/feeds/videos.xml?channel_id=<UC…>' \| head -c 200` |
+| **AC-P4** RSS 실패 360분 지속 | 폴백(RSS)이 6시간째 눈이 멀었다 — 이그레스·DNS·유튜브 도달 불가, 또는 상류 간헐 장애가 길게 이어짐 (아래 주석) | `curl -sS 'https://www.youtube.com/feeds/videos.xml?channel_id=<UC…>' \| head -c 200` |
 | **AC-P5** WebSub 서명 실패 | 시크릿 불일치. **조용한 202 의 원인을 특정하는 유일한 축** | 구독을 지우고 재구독해 시크릿을 새로 발급 |
 | **AC-P6** 웹훅 침묵 | 폴링이 공지했는데 같은 방송의 웹훅 기록이 없다 → **웹훅 경로가 고장** | chzzkbot `LIVE_EVENT_WEBHOOK_URL` 값 · 우리 8081 도달성 |
 | **AC-P7** 리스 잔량/갱신 실패 | WebSub 구독이 만료되어 간다 | 이그레스 확인 후 수동 재구독 |
 | 워치독: 하트비트 90분 | 프로세스는 살아 있는데 일을 안 한다 | `systemctl --user status` · 이벤트 루프 블로킹 의심 |
 | `unknown_channel` 설정에 없는 채널 | `GET /api/live` 응답에 우리 채널 말고 다른 채널이 **처음** 보였다 (chzzkbot 이 그 채널도 서빙 중) | 그 채널이 의도된 것인지(§8-b 아이곰) 확인. 공지는 우리 채널만 간다. **재기동에는 다시 울리지 않는다** — 본 목록을 `runtime_state.live_unknown_channels_seen` 에 남긴다. 정말 새 채널이 나타났을 때만 그 채널로 울린다 |
 | `downtime_detected` RSS 피드 상한 | 기동 복구가 받은 RSS 15건이 **전부 원장에 없던 새 영상**이라 그보다 오래된 업로드를 못 봤을 수 있다 | 유튜브 채널 페이지에서 15번째보다 오래된 영상 중 공지 누락이 있는지 눈으로 확인. 원장이 하나라도 아는 영상이 있었으면 이 경보는 나지 않는다 (피드는 항상 15건이라 그 사실만으로는 울리지 않는다) |
+
+> ★ **AC-P4 가 횟수가 아니라 지속시간(360분)인 이유.** 유튜브 `/feeds/videos.xml` 은 2025-12 부터
+> 간헐적으로 구글 404/500 페이지를 돌려준다 — **상류의 알려진 문제**이고 우리 쪽 고장이 아니다.
+> 실측(2026-09-22 ~ 10-04, 채널 2개): 채널당 폴의 약 12% 가 실패하고, 실패는 수 시간짜리 에피소드로
+> 몰린다(최장 270분). 호스트에서 curl 로, 제3자 대조 채널(`UCBR8-60-B28hp2BmDPdntcQ`)과 브라우저
+> User-Agent 로도 재현된다. 예전 "5회 연속" 규칙은 12일간 39번 울렸고 **놓친 공지는 0건**이었다
+> (실패 사이사이로 RSS 는 여전히 성공한다). 또 전 채널 실패 시 폴 간격이 300→600→900초로 물리므로
+> "5회" 는 상황마다 다른 시간이었다. 그래서 지금은 *폴백이 얼마나 오래 눈이 멀었는가* 를 본다.
+> 지표는 `youtube_rss_fail_duration_sec{channel}` (예전 `youtube_rss_fail_streak` 대체).
+>
+> ⚠️ **재기동하면 지속시간이 0 부터 다시 잰다.** `stuck-watch` 는 메모리에만 있다. 360분 창이라
+> 체감이 크다 — 실패 5시간째에 배포하면 경보는 그로부터 6시간 뒤에야 울린다. 재기동 직후
+> RSS 상태가 궁금하면 경보를 기다리지 말고 `rss 폴 실패` 로그와 위 curl 로 직접 본다.
+> 외부 대시보드·알림 규칙이 옛 지표 이름(`youtube_rss_fail_streak`)을 보고 있었다면 함께 바꾼다
+> (단위도 횟수 → 초).
+>
+> ⚠️ **설정 키가 바뀌었다: `youtube.rssFailThresholdCount` → `youtube.rssFailThresholdMin`** (분 단위).
+> 스키마가 모르는 키를 조용히 무시하므로 옛 키를 남겨 두면 **에러 없이 기본 360분이 쓰인다.**
+> 값을 바꿔 두었다면 새 이름으로 옮길 것.
 
 > ★ **`live_detected_via{api-poll}` 비율과 `youtube_detected_via{rss}` 비율에는 경보를 걸지 않는다.**
 > 이벤트가 하루 0~2건이라 분모가 없어 1건만 폴백이어도 50% 가 된다. **주간 추세 확인용 지표**이고,

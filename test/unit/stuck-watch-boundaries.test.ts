@@ -15,7 +15,7 @@ import type { StuckWatchThresholds } from '../../src/live/stuck-watch.js';
 const T: StuckWatchThresholds = {
   confirmedStuckMs: 5 * 60_000,
   pollFailCount: 5,
-  rssFailCount: 5,
+  rssFailMs: 360 * 60_000,
   renewFailCount: 3,
   followerStaleCount: 5,
 };
@@ -98,10 +98,37 @@ describe('AC-P2 — live-api unknown (연속횟수 판정)', () => {
 });
 
 describe('AC-P4 / AC-P7 — 같은 구현, 다른 임계', () => {
-  it('RSS 는 4회 무경보 / 5회 경보', () => {
+  /**
+   * ★ RSS 는 **지속시간** 판정이다 (`youtube.rssFailThresholdMin`, 기본 360분).
+   *   유튜브 피드의 간헐 404/500 이 상류 문제라 횟수 규칙은 오탐만 냈고, 백오프로
+   *   폴 간격이 변해 "N회" 의 벽시계 길이도 일정하지 않았다.
+   */
+  it('RSS 는 359분 59.999초 무경보 / 정확히 360분에 경보', () => {
     const w = watch();
-    for (let i = 1; i <= 4; i++) expect(w.observe('rss', UC, true, i)).toBeUndefined();
-    expect(w.observe('rss', UC, true, 5)?.kind).toBe('rss_fail');
+    const t0 = 1_000_000;
+    for (const dt of [0, 60_000, T.rssFailMs - 1]) {
+      expect(w.observe('rss', UC, true, t0 + dt)).toBeUndefined();
+    }
+    const fired = w.observe('rss', UC, true, t0 + T.rssFailMs);
+    expect(fired?.kind).toBe('rss_fail');
+    expect(fired?.mode).toBe('duration');
+    expect(fired?.value).toBe(T.rssFailMs);
+  });
+
+  it('RSS 는 횟수와 무관하다 — 360분 안에 몇 번을 실패해도 울리지 않는다', () => {
+    const w = watch();
+    for (let i = 0; i < 100; i++) expect(w.observe('rss', UC, true, i * 60_000)).toBeUndefined();
+  });
+
+  it('RSS 는 성공 하나로 지속시간이 리셋되고, 새 에피소드는 0 부터 잰다', () => {
+    const w = watch();
+    w.observe('rss', UC, true, 0);
+    w.observe('rss', UC, false, T.rssFailMs - 1);
+    expect(w.value('rss', UC, T.rssFailMs)).toBe(0);
+    const t1 = T.rssFailMs;
+    w.observe('rss', UC, true, t1);
+    expect(w.observe('rss', UC, true, t1 + T.rssFailMs - 1)).toBeUndefined();
+    expect(w.observe('rss', UC, true, t1 + T.rssFailMs)).toBeDefined();
   });
 
   it('WebSub 갱신은 2회 무경보 / 3회 경보', () => {
@@ -114,9 +141,10 @@ describe('AC-P4 / AC-P7 — 같은 구현, 다른 임계', () => {
 describe('★ 도메인 간 카운터 격리 — 공유 구현의 가장 흔한 회귀', () => {
   it('RSS 실패가 live-api unknown 스트릭을 오염시키지 않는다', () => {
     const w = watch();
-    for (let i = 1; i <= 4; i++) w.observe('rss', UC, true, i);
-    expect(w.value('rss', UC, 4)).toBe(4);
-    expect(w.value('live-api-unknown', SISNES, 4)).toBe(0);
+    // ★ rss 는 duration 이라 값이 밀리초다 — t=0 부터 3ms 지속.
+    for (let i = 0; i <= 3; i++) w.observe('rss', UC, true, i);
+    expect(w.value('rss', UC, 3)).toBe(3);
+    expect(w.value('live-api-unknown', SISNES, 3)).toBe(0);
   });
 
   it('반대 방향도 성립한다', () => {
@@ -128,11 +156,11 @@ describe('★ 도메인 간 카운터 격리 — 공유 구현의 가장 흔한 
 
   it('같은 도메인이라도 채널이 다르면 카운터가 갈린다', () => {
     const w = watch();
-    for (let i = 1; i <= 4; i++) w.observe('rss', 'UCaaaaaaaaaaaaaaaaaaaaaa', true, i);
-    expect(w.value('rss', 'UCbbbbbbbbbbbbbbbbbbbbbb', 4)).toBe(0);
+    w.observe('rss', 'UCaaaaaaaaaaaaaaaaaaaaaa', true, 0);
+    expect(w.value('rss', 'UCbbbbbbbbbbbbbbbbbbbbbb', 60_000)).toBe(0);
     // 한 채널이 임계를 넘겨도 다른 채널은 조용하다
-    w.observe('rss', 'UCaaaaaaaaaaaaaaaaaaaaaa', true, 5);
-    expect(w.observe('rss', 'UCbbbbbbbbbbbbbbbbbbbbbb', true, 6)).toBeUndefined();
+    expect(w.observe('rss', 'UCaaaaaaaaaaaaaaaaaaaaaa', true, T.rssFailMs)).toBeDefined();
+    expect(w.observe('rss', 'UCbbbbbbbbbbbbbbbbbbbbbb', true, T.rssFailMs)).toBeUndefined();
   });
 });
 

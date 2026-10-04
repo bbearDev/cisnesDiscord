@@ -386,7 +386,7 @@ describe('요청 모양 · 지표', () => {
       specs: buildSpecs({
         confirmedStuckMs: 300_000,
         pollFailCount: 5,
-        rssFailCount: 5,
+        rssFailMs: 360 * 60_000,
         renewFailCount: 3,
         followerStaleCount: 1,
       }),

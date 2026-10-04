@@ -127,8 +127,13 @@ export const METRIC_NAMES = [
    *   세는 것은 그 함수를 부른 쪽의 일이다 (§10 시나리오 1 완화책).
    */
   'live_state_verdict',
-  /** ★ RSS 폴 연속 실패. 임계 초과 → AC-P4 */
-  'youtube_rss_fail_streak',
+  /**
+   * ★ 채널별 RSS 폴 실패 지속 시간(초). 마지막 성공 뒤 첫 실패부터 잰다. 임계 초과 → AC-P4.
+   *
+   *   예전 `youtube_rss_fail_streak`(횟수)를 대신한다 — 경보가 지속시간 판정으로 바뀌어
+   *   (`youtube.rssFailThresholdMin`) 지표도 같은 축으로 맞췄다.
+   */
+  'youtube_rss_fail_duration_sec',
   /** ★ 서명 검증 실패 수. **AC-P5 — 조용한 202 의 원인을 특정하는 유일한 축** */
   'websub_signature_failures',
   /** ★ 호출별 타임아웃 발생 수. 특정 호출만 치솟으면 그 상류가 병들고 있다 (§5.6.1) */
@@ -197,7 +202,7 @@ export const METRIC_SPECS = {
   live_unconfirmed_duration_sec: { kind: 'gauge', source: 'reader' },
   live_unconfirmed_observed: { kind: 'counter', source: 'local' },
   live_state_verdict: { kind: 'counter', source: 'local' },
-  youtube_rss_fail_streak: { kind: 'gauge', source: 'reader' },
+  youtube_rss_fail_duration_sec: { kind: 'gauge', source: 'reader' },
   websub_signature_failures: { kind: 'counter', source: 'reader' },
   outbound_timeout_total: { kind: 'counter', source: 'reader' },
   discord_gateway_reconnects: { kind: 'counter', source: 'reader' },

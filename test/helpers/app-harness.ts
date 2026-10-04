@@ -140,7 +140,7 @@ export function writeConfig(opts: {
       'youtube:',
       `  channels:${channels}`,
       '  rssPollSec: 60',
-      '  rssFailThresholdCount: 5',
+      '  rssFailThresholdMin: 360',
       '  renewFailThresholdCount: 3',
       '  leaseWarnRatio: 0.2',
       'recovery:',
